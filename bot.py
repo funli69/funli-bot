@@ -9,7 +9,7 @@ dotenv.load_dotenv()
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='f.', intents=intents)
+bot = commands.Bot(command_prefix='f.', intents=intents , help_command=None)
 
 # da link to tetrio api
 RANK_URL = "https://ch.tetr.io/api/users/{}/summaries/league"
@@ -38,8 +38,8 @@ rank_to_role = {
     'x+': 'X+ Rank'
 }
 
-ALLOWED_CHANNEL_ID = [1170631780232077424, 857080587726487563]
-
+ALLOWED_CHANNEL_ID = [1170631780232077424, 857080587726487563]  #first one is bot channel in TAC, second is in my private server
+ALLOWED_GUILDS_ID = [946060638231359588] #TAC server id
 
 def connect_db():
     return sqlite3.connect('user-data.db')
@@ -86,6 +86,9 @@ async def remove_all_rank_roles(member, guild):
 
 @bot.command()
 async def link(ctx, username: str):
+    if ctx.guild.id not in ALLOWED_GUILDS_ID:
+        await ctx.send("This bot is not usable in this server.")
+        return
     if ctx.channel.id not in ALLOWED_CHANNEL_ID:
         await ctx.send(f"Wrong channel! Please use #{ctx.guild.get_channel(ALLOWED_CHANNEL_ID[0]).name}.")
         return
@@ -131,6 +134,9 @@ async def link(ctx, username: str):
 
 @bot.command()
 async def rank_update(ctx):
+    if ctx.guild.id not in ALLOWED_GUILDS_ID:
+        await ctx.send("This bot is not usable in this server.")
+        return
     if ctx.channel.id not in ALLOWED_CHANNEL_ID:
         await ctx.send(f"Wrong channel! Please use #{ctx.guild.get_channel(ALLOWED_CHANNEL_ID[0]).name}.")
         return
@@ -227,24 +233,31 @@ def migrate_db():
 
 @bot.command()
 async def help(ctx):
-    if ctx.channel.id not in ALLOWED_CHANNEL_ID:
-        first_allowed_channel = ctx.guild.get_channel(ALLOWED_CHANNEL_ID[0])
-        channel_name = first_allowed_channel.name if first_allowed_channel else "an allowed channel"
-        await ctx.send(f"Wrong channel! Please use #{channel_name}.")
+    if ctx.guild.id not in ALLOWED_GUILDS_ID:
+        await ctx.send("This bot is not usable in this server.")
         return
+    if ctx.channel.id not in ALLOWED_CHANNEL_ID:
+        allowed_channel = ctx.guild.get_channel(ALLOWED_CHANNEL_ID[0])
+        if allowed_channel:
+            await ctx.send(f"Wrong channel! Please use {f'<#{allowed_channel.id}>'}.")
+        else:
+            await ctx.send("Could not find the allowed channel. Please contact an admin.")
+        return
+    else:
+        await ctx.send("This bot is not usable in this server.")
+        return
+
 
     
     help_message = """
-'''
+```Description: The bot assigns rank roles based on your Tetr.io rank and updates them periodically. Use the f.link command to link your Tetr.io account first.
+
 Commands: 
 f.help - Show this help message.
 f.link <username> - Link your Tetr.io account to get your rank updated automatically. 
 f.rank_update - Refresh your rank manually (if you can't wait lol). 
 
-Description: The bot assigns rank roles based on your Tetr.io rank and updates them periodically. Use the f.link command to link your Tetr.io account first.
-
-For issues or suggestions, contact **funli**.
-'''
+For issues or suggestions, contact funli.```
 """
     await ctx.send(help_message)
 
