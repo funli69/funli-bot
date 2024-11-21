@@ -243,12 +243,7 @@ async def help(ctx):
         else:
             await ctx.send("Could not find the allowed channel. Please contact an admin.")
         return
-    else:
-        await ctx.send("This bot is not usable in this server.")
-        return
 
-
-    
     help_message = """
 ```Description: The bot assigns rank roles based on your Tetr.io rank and updates them periodically. Use the f.link command to link your Tetr.io account first.
 
