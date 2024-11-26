@@ -38,7 +38,7 @@ rank_to_role = {
     'x+': 'X+ Rank'
 }
 
-ALLOWED_CHANNEL_ID = [1170631780232077424, 857080587726487563]  #first one is bot channel in TAC, second is in my private server
+ALLOWED_CHANNEL_ID = [1170631780232077424, 857080587726487563, 1309257123804483594]  #first one is bot channel in TAC, second is in my private server, third is test channel
 ALLOWED_GUILDS_ID = [946060638231359588] #TAC server id
 
 def connect_db():
@@ -178,44 +178,125 @@ async def rank_update(ctx):
     
     conn.close()
 
-@tasks.loop(minutes=5)
+async def ensure_single_rank_role(member, guild):
+    # Get all roles the member currently has
+    roles = member.roles
+    rank_roles = [role for role in roles if role.name in rank_to_role.values()]
+
+    if len(rank_roles) > 1:
+        print(f"{member.name} has multiple rank roles. Removing incorrect roles.")
+        for role in rank_roles:
+            # Determine the correct role for this member based on the rank in the database
+            correct_role_name = rank_to_role.get(member.rank)  # Get the correct role based on the rank
+            if role.name != correct_role_name:
+                await member.remove_roles(role)
+                print(f"Removed role {role.name} from {member.name}")
+    elif len(rank_roles) == 1:
+        print(f"{member.name} already has the correct rank role '{rank_roles[0].name}'.")
+
+async def ensure_single_rank_role(member, guild, rank_from_db):
+    # Get all roles the member currently has
+    roles = member.roles
+    rank_roles = [role for role in roles if role.name in rank_to_role.values()]
+
+    if len(rank_roles) > 1:
+        print(f"{member.name} has multiple rank roles. Removing incorrect roles.")
+        for role in rank_roles:
+            # Determine the correct role for this member based on the rank in the database
+            correct_role_name = rank_to_role.get(rank_from_db)  # Get the correct role based on the rank
+            if role.name != correct_role_name:
+                await member.remove_roles(role)
+                print(f"Removed role {role.name} from {member.name}")
+        print(' ')
+    elif len(rank_roles) == 1:
+        print("No other rank roles detected.\n")
+
+@tasks.loop(minutes=1)
 async def update_rank_roles():
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT discord_id, tetrio_username, rank FROM users")
-    users = cursor.fetchall()
+    try:
+        print('Change logs:\n')
+        cursor.execute("SELECT discord_id, tetrio_username, rank FROM users")
+        users = cursor.fetchall()
 
-    for discord_id, tetrio_username, current_rank in users:
-        try:
-            user_info = get_user_rank(tetrio_username)
-            if user_info:
-                new_rank = user_info.get('rank')
-                if new_rank and new_rank != current_rank:
-                    guild = bot.guilds[0]
-                    member = guild.get_member(int(discord_id))
+        guild_id = ALLOWED_GUILDS_ID[0]
+        guild = bot.get_guild(guild_id)
+        if not guild:
+            print(f"Error: Guild with ID {guild_id} not found.")
+            return
 
-                    if member:
-                        await remove_all_rank_roles(member, guild)
-                        rank_role = rank_to_role.get(new_rank)
-                        if rank_role:
-                            new_role = discord.utils.get(guild.roles, name=rank_role)
-                            if new_role:
-                                await member.add_roles(new_role)
-                                await guild.get_channel(ALLOWED_CHANNEL_ID[0]).send(
-                                    f"{member.mention}'s rank updated to '{rank_role}'."
-                                )
+        # Check each user in the database
+        for discord_id, tetrio_username, rank in users:
+            try:
+                current_rank = rank
+                user_info = get_user_rank(tetrio_username)
+                if user_info:
+                    new_rank = user_info.get('rank')
+                    print(f"*Checking rank for {tetrio_username}:")
+                    print(f"Current rank in database: '{current_rank}'")
+                    print(f"Fetched rank from Tetr.io: '{new_rank}'")
 
-                        cursor.execute("UPDATE users SET rank = ? WHERE discord_id = ?", (new_rank, discord_id))
-                        conn.commit()
-        except Exception as e:
-            print(f"Error updating rank for {discord_id}: {e}")
+                    # Step 1: Compare the ranks
+                    if new_rank != current_rank:  # If the ranks are different, update the database and role
+                        member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
+                        if member:
+                            # Step 2: Remove all existing rank roles first (before assigning new role)
+                            await remove_all_rank_roles(member, guild)
 
-    conn.close()
+                            # Update the database with the new rank
+                            cursor.execute(
+                                "UPDATE users SET rank = ? WHERE discord_id = ?",
+                                (new_rank, discord_id)
+                            )
+                            print(f"Updated rank for {tetrio_username} (<@{discord_id}>) to {new_rank}.")
+
+                            # Assign the new role based on the new rank
+                            new_role_name = rank_to_role.get(new_rank)
+                            if new_role_name:
+                                new_role = discord.utils.get(guild.roles, name=new_role_name)
+                                if new_role:
+                                    if new_role not in member.roles:
+                                        print(f"Assigning new rank role '{new_role_name}' to {member.name}")
+                                        await member.add_roles(new_role)
+                                    else:
+                                        print(f"{member.name} already has the correct role '{new_role_name}'.")
+                                else:
+                                    print(f"Warning: Role '{new_role_name}' not found in guild.")
+                            else:
+                                print(f"Warning: No role mapping for rank '{new_rank}'.")
+
+                    else:  # Step 2: If the rank matches, check if the role is correct
+                        member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
+                        if member:
+                            current_role_name = rank_to_role.get(current_rank)
+                            current_role = discord.utils.get(guild.roles, name=current_role_name)
+                            if current_role and current_role not in member.roles:
+                                print(f"{member.name} has the wrong role. Assigning '{current_role_name}' role.")
+                                await member.add_roles(current_role)
+                            else:
+                                print(f"{member.name} already has the correct role '{current_role_name}'.")
+                            # Ensure that the member only has one rank role
+                            await ensure_single_rank_role(member, guild, current_rank)
+
+                else:
+                    print(f"Failed to fetch rank data for username '{tetrio_username}'.\n")
+            except Exception as e:
+                print(f"Error updating rank for Discord ID {discord_id}: {e}.\n")
+
+        conn.commit()
+
+    except Exception as e:
+        print(f"Error during rank update: {e}")
+    finally:
+        conn.close()
+        print(' ')
 
 def migrate_db():
     """Handles database schema migrations, ensuring necessary columns exist."""
     conn = connect_db()
     cursor = conn.cursor()
+    print(' ')
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN tetrio_username TEXT")
     except sqlite3.OperationalError:
@@ -228,7 +309,7 @@ def migrate_db():
     
     conn.commit()
     conn.close()
-    print("Database migration completed.")
+    print("Database migration completed.\n")
 
 
 @bot.command()
@@ -259,11 +340,37 @@ For issues or suggestions, contact funli.```
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user}')
+    print(f'\nLogged in as {bot.user}\nv1.1\n')
     create_db()
-    migrate_db()  
+    migrate_db()
     update_rank_roles.start()
+    ''' this whole long ass part is to check if the database stored the correct info
+cuz i messed up the code a while ago'''
+
+    db_file = 'user-data.db'
+    try:
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        print("Tables:", cursor.fetchall())
+    
+        cursor.execute("SELECT * FROM users;")
+        print("Data in 'users':")
+        for row in cursor.fetchall():
+            print(row)
+        print(' ')
+        conn.close()
+    except sqlite3.DatabaseError as e:
+        print(f"Database error: {e}")
+    except FileNotFoundError:
+        print("Database file not found.")
 
 
 # Run the bot
 bot.run(os.getenv('TOKEN'))
+
+
+
+
+
+
