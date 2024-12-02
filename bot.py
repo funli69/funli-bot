@@ -10,39 +10,6 @@ intent = discord.Intents.default()
 intent.message_content = True
 bot = commands.Bot(command_prefix='f.', intents = intent, help_command = None)
 
-def connect_db():
-    return sqlite3.connect('user-data.db')
-def create_db():
-    conn = connect_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            discord_id TEXT PRIMARY KEY,
-            tetrio_username TEXT,
-            rank TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-def migrate_db():
-    conn = connect_db()
-    cursor = conn.cursor()
-    print(' ')
-    try:
-        cursor.execute("ALTER TABLE users ADD COLUMN tetrio_username TEXT")
-    except sqlite3.OperationalError:
-        print("Column 'tetrio_username' already exists.")
-    
-    try:
-        cursor.execute("ALTER TABLE users ADD COLUMN rank TEXT")
-    except sqlite3.OperationalError:
-        print("Column 'rank' already exists.")
-    
-    conn.commit()
-    conn.close()
-    print("Database migration completed.\n")
-
-
 LEAGUE_URL = "https://ch.tetr.io/api/users/{}/summaries/league"
 USER_URL = "https://ch.tetr.io/api/users/{}"
 def api_request(template, value):
@@ -81,6 +48,33 @@ rank_to_role = {
     'x+': 'X+ Rank'
 }
 
+def connect_db():
+    return sqlite3.connect('user-data.db')
+
+def create_db():
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            discord_id TEXT PRIMARY KEY,
+            tetrio_username TEXT,
+            rank TEXT,
+            tr REAL,
+            apm REAL,
+            vs REAL,
+            pps REAL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+async def remove_all_rank_roles(member, guild):
+    """Remove all rank roles from a member."""
+    for rank_name in rank_to_role.values():
+        role = discord.utils.get(guild.roles, name=rank_name)
+        if role and role in member.roles:
+            await member.remove_roles(role)
+
 @bot.command()
 async def link(ctx, username: str):
     with connect_db() as conn:
@@ -93,9 +87,17 @@ async def link(ctx, username: str):
             return
         
         user = api_request(USER_URL, username)
+        if not user:
+            await ctx.send(f"User '{username}' not found")
+            return
+
         connections = user['connections']
         if 'discord' not in connections:
             await ctx.send("Your TETR.IO account is not linked to a Discord account. This is needed for verification.")
+            return
+
+        if connections['discord']['id'] != str(ctx.author.id):
+            await ctx.send("Your Discord ID does not match the provided TETR.IO username.")
             return
 
         league_info = api_request(LEAGUE_URL, username)
@@ -103,14 +105,14 @@ async def link(ctx, username: str):
             await ctx.send(f"Could not fetch rank data for '{username}'.")
             return
         
-        rank = user_info.get('rank')
-
-        if connections['discord']['id'] != str(ctx.author.id):
-            await ctx.send("Your Discord ID does not match the provided TETR.IO username.")
-            return
+        rank = league_info.get("rank")
+        tr = league_info.get("tr")
+        apm = league_info.get("apm")
+        vs = league_info.get("vs")
+        pps = league_info.get("pps")
         
-        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank) VALUES (?, ?, ?)",
-                       (str(ctx.author.id), username, rank))
+        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, tr, apm, vs, pps) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (str(ctx.author.id), username, rank, tr, apm, vs, pps))
         
     rank_role = rank_to_role.get(rank)
     if not rank_role:
@@ -124,6 +126,24 @@ async def link(ctx, username: str):
     await remove_all_rank_roles(ctx.author, ctx.guild)
     await ctx.author.add_roles(role)
     await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+
+lbtypes = ["tr", "apm", "vs", "pps"]
+
+@bot.command(name="lb")
+async def leaderboard(ctx, lbtype: str):
+    if lbtype not in lbtypes:
+        await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
+        return
+    string = f"{lbtype} leaderboard: ```"
+    with connect_db() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute(f"SELECT rank, tetrio_username, {lbtype} FROM users")
+        users = cursor.fetchall()
+        for i in range(len(users)):
+            string += "{:<3}{:<3}{:<20}{}".format(i+1, users[i][0], users[i][1], users[i][2])
+            
+    await ctx.send(string + "```")
 
 TAC_GUILD_ID = 946060638231359588
 
@@ -212,6 +232,44 @@ async def update_rank_roles():
     finally:
         conn.close()
         print(' ')
+
+def add_column(cursor, name, sqltype):
+    try:
+        cursor.execute(f"ALTER TABLE users ADD COLUMN {name} {sqltype}")
+    except sqlite3.OperationalError:
+        print(f"Column '{name}' already exists.")
+
+def migrate_db():
+    """Handles database schema migrations, ensuring necessary columns exist."""
+    conn = connect_db()
+    cursor = conn.cursor()
+    print(' ')
+
+    add_column(cursor, "tetrio_username", "TEXT")
+    add_column(cursor, "rank",            "TEXT")
+    add_column(cursor, "tr",              "REAL")
+    add_column(cursor, "apm",             "REAL")
+    add_column(cursor, "vs",              "REAL")
+    add_column(cursor, "pps",             "REAL")
+    
+    conn.commit()
+    conn.close()
+    print("Database migration completed.\n")
+
+@bot.command()
+async def help(ctx):
+    help_message = """
+```Description: The bot assigns rank roles based on your Tetr.io rank and updates them periodically. Use the f.link command to link your Tetr.io account first.
+
+Commands: 
+f.help - Show this help message.
+f.link <username> - Link your Tetr.io account to get your rank updated automatically. 
+f.rank_update - Refresh your rank manually (if you can't wait lol). 
+
+For issues or suggestions, contact funli.```
+"""
+    await ctx.send(help_message)
+
 
 @bot.event
 async def on_ready():
