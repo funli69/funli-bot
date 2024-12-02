@@ -193,20 +193,43 @@ async def link_other(ctx, discord_name: str, tetrio_name: str):
 
 lbtypes = ["tr", "apm", "vs", "pps"]
 
+# ew please abstract
 @bot.command(name="lb")
 async def leaderboard(ctx, lbtype: str):
-    if lbtype not in lbtypes:
+    string = f"{lbtype} leaderboard: ```"
+    if lbtype in lbtypes:
+        with connect_db() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(f"SELECT rank, tetrio_username, {lbtype} FROM users ORDER BY {lbtype} DESC")
+            users = cursor.fetchall()
+            for i in range(len(users)):
+                user = users[i]
+                string += "{:<3}{:<3}{:<20}{}\n".format(i+1, user[0], user[1], int(user[2]) if lbtype == "tr" else user[2])
+    elif lbtype == "app":
+        with connect_db() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(f"SELECT rank, tetrio_username, apm, pps FROM users")
+            users = cursor.fetchall()
+            print(users)
+            users = sorted(users, key = lambda u: u[2] / u[3] / 60, reverse = True)
+            for i in range(len(users)):
+                user = users[i]
+                string += "{:<3}{:<3}{:<20}{}\n".format(i+1, user[0], user[1], user[2] / user[3] / 60)
+    elif lbtype == "vs/apm":
+        with connect_db() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(f"SELECT rank, tetrio_username, vs, apm FROM users")
+            users = cursor.fetchall()
+            users = sorted(users, key = lambda u: u[2] / u[3], reverse = True)
+            for i in range(len(users)):
+                user = users[i]
+                string += "{:<3}{:<3}{:<20}{}\n".format(i+1, user[0], user[1], user[2] / user[3])
+    else:
         await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
         return
-    string = f"{lbtype} leaderboard: ```"
-    with connect_db() as conn:
-        cursor = conn.cursor()
-
-        cursor.execute(f"SELECT rank, tetrio_username, {lbtype} FROM users ORDER BY {lbtype} DESC")
-        users = cursor.fetchall()
-        for i in range(len(users)):
-            string += "{:<3}{:<3}{:<20}{}\n".format(i+1, users[i][0], users[i][1], int(users[i][2]) if lbtype == "tr" else users[i][2])
-            
     await ctx.send(string + "```")
 
 TAC_GUILD_ID = 946060638231359588
