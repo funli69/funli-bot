@@ -6,9 +6,10 @@ from discord.ext import commands, tasks
 import requests
 
 
-intent = discord.Intents.default()
-intent.message_content = True
-bot = commands.Bot(command_prefix='f.', intents = intent, help_command = None)
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+bot = commands.Bot(command_prefix='f.', intents = intents, help_command = None)
 
 LEAGUE_URL = "https://ch.tetr.io/api/users/{}/summaries/league"
 USER_URL = "https://ch.tetr.io/api/users/{}"
@@ -127,6 +128,69 @@ async def link(ctx, username: str):
     await ctx.author.add_roles(role)
     await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
 
+@bot.command()
+async def link_other(ctx, discord_name: str, tetrio_name: str):
+    members = ctx.guild.members
+    member = None
+    for m in members:
+        if m.name == discord_name:
+            member = m
+            break
+    if not member:
+        await ctx.send(f"No user '{discord_name}' in this server.")
+        return
+    # might aswell 've done for other function but 2lazy4this
+    discord_id = str(member.id)
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT discord_id FROM users WHERE discord_id = {discord_id}")
+        existing_user = cursor.fetchone()
+
+        if existing_user:
+            await ctx.send("Your account is already linked. Use 'f.rank_update' to refresh your rank.")
+            return
+        
+        user = api_request(USER_URL, tetrio_name)
+        if not user:
+            await ctx.send(f"User '{tetrio_name}' not found")
+            return
+
+        connections = user['connections']
+        if 'discord' not in connections:
+            await ctx.send("Your TETR.IO account is not linked to a Discord account. This is needed for verification.")
+            return
+
+        if connections['discord']['id'] != discord_id:
+            await ctx.send("Your Discord ID does not match the provided TETR.IO username.")
+            return
+
+        league_info = api_request(LEAGUE_URL, tetrio_name)
+        if not league_info:
+            await ctx.send(f"Could not fetch rank data for '{tetrio_name}'.")
+            return
+        
+        rank = league_info.get("rank")
+        tr = league_info.get("tr")
+        apm = league_info.get("apm")
+        vs = league_info.get("vs")
+        pps = league_info.get("pps")
+        
+        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, tr, apm, vs, pps) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (discord_id, tetrio_name, rank, tr, apm, vs, pps))
+        
+    rank_role = rank_to_role.get(rank)
+    if not rank_role:
+        await ctx.send(f"Rank '{rank}' is not recognized.")
+        return
+    
+    role = discord.utils.get(ctx.guild.roles, name = rank_role)
+    if not role:
+        await ctx.send(f"Role '{rank_role}' not found. Please contact and admin.")
+        return
+    await remove_all_rank_roles(ctx.author, ctx.guild)
+    await ctx.author.add_roles(role)
+    await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+
 lbtypes = ["tr", "apm", "vs", "pps"]
 
 @bot.command(name="lb")
@@ -138,10 +202,10 @@ async def leaderboard(ctx, lbtype: str):
     with connect_db() as conn:
         cursor = conn.cursor()
 
-        cursor.execute(f"SELECT rank, tetrio_username, {lbtype} FROM users")
+        cursor.execute(f"SELECT rank, tetrio_username, {lbtype} FROM users ORDER BY {lbtype} DESC")
         users = cursor.fetchall()
         for i in range(len(users)):
-            string += "{:<3}{:<3}{:<20}{}".format(i+1, users[i][0], users[i][1], users[i][2])
+            string += "{:<3}{:<3}{:<20}{}\n".format(i+1, users[i][0], users[i][1], int(users[i][2]) if lbtype == "tr" else users[i][2])
             
     await ctx.send(string + "```")
 
