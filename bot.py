@@ -253,12 +253,12 @@ async def update_rank_roles():
         for discord_id, tetrio_username, rank in users:
             try:
                 current_rank = rank
-                user_info = get_user_rank(tetrio_username)
-                if not user_info:
+                league_info = api_request(LEAGUE_URL, tetrio_username)
+                if not league_info:
                     print(f"Failed to fetch rank data for username '{tetrio_username}'.\n")
                     continue
 
-                new_rank = user_info.get('rank')
+                new_rank = league_info.get('rank')
                 print(f"*Checking rank for {tetrio_username}:")
                 print(f"Current rank in database: '{current_rank}'")
                 print(f"Fetched rank from Tetr.io: '{new_rank}'")
@@ -345,6 +345,7 @@ def migrate_db():
 
 @bot.command()
 async def help(ctx):
+    print('helped')
     help_message = """
 ```Description: The bot assigns rank roles based on your Tetr.io rank and updates them periodically. Use the f.link command to link your Tetr.io account first.
 
@@ -362,6 +363,7 @@ For issues or suggestions, contact funli.```
 async def on_ready():
     create_db()
     migrate_db()
+    update_rank_roles.start()
     print('Logged in.\nv1.3 test')
 
 load_dotenv()
