@@ -13,6 +13,8 @@ bot = commands.Bot(command_prefix='f.', intents = intents, help_command = None)
 
 LEAGUE_URL = "https://ch.tetr.io/api/users/{}/summaries/league"
 USER_URL = "https://ch.tetr.io/api/users/{}"
+SEARCH_URL = 'https://ch.tetr.io/api/users/search/discord:{}'
+
 def api_request(template, value):
     url = template.format(value)
     response = requests.get(url)
@@ -76,8 +78,12 @@ async def remove_all_rank_roles(member, guild):
         if role and role in member.roles:
             await member.remove_roles(role)
 
+def update_user():
+    pass
+
+
 @bot.command()
-async def link(ctx, username: str):
+async def link(ctx):
     with connect_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (str(ctx.author.id),))
@@ -86,26 +92,16 @@ async def link(ctx, username: str):
         if existing_user:
             await ctx.send("Your account is already linked. Use 'f.rank_update' to refresh your rank.")
             return
+
+        user = api_request(SEARCH_URL, ctx.author.id)
         
-        user = api_request(USER_URL, username)
         if not user:
-            await ctx.send(f"User '{username}' not found")
-            return
-
-        connections = user['connections']
-        if 'discord' not in connections:
-            await ctx.send("Your TETR.IO account is not linked to a Discord account. This is needed for verification.")
-            return
-
-        if connections['discord']['id'] != str(ctx.author.id):
-            await ctx.send("Your Discord ID does not match the provided TETR.IO username.")
-            return
+            await ctx.send(f"User {ctx.author.name} has not connected Discord to TETR.IO.")
+            return 
+        username = user["user"]["username"]
 
         league_info = api_request(LEAGUE_URL, username)
-        if not league_info:
-            await ctx.send(f"Could not fetch rank data for '{username}'.")
-            return
-        
+
         rank = league_info.get("rank")
         tr = league_info.get("tr")
         apm = league_info.get("apm")
