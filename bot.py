@@ -193,44 +193,39 @@ async def link_other(ctx, discord_name: str, tetrio_name: str):
 
 lbtypes = ["tr", "apm", "vs", "pps"]
 
-# ew please abstract
-@bot.command(name="lb")
-async def leaderboard(ctx, lbtype: str):
+def leaderboard(lbtype, fields, value_func):
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute(f"SELECT rank, tetrio_username, {','.join(fields)} FROM users" + (f" ORDER BY {lbtype} DESC" if len(fields) == 1 else ""))
+    users = cursor.fetchall()
+    if len(fields) > 1:
+        users = sorted(users, key = value_func, reverse = True)
+
+    conn.close()
+
     string = f"{lbtype} leaderboard: ```"
+    for i in range(len(users)):
+        user = users[i]
+        string += "{:<3}{:<3}{:<20}{:.2f}\n".format(i+1, user[0], user[1], value_func(user))
+    string += "```"
+    return string
+
+@bot.command()
+async def lb(ctx, lbtype: str):
     if lbtype in lbtypes:
-        with connect_db() as conn:
-            cursor = conn.cursor()
-
-            cursor.execute(f"SELECT rank, tetrio_username, {lbtype} FROM users ORDER BY {lbtype} DESC")
-            users = cursor.fetchall()
-            for i in range(len(users)):
-                user = users[i]
-                string += "{:<3}{:<3}{:<20}{}\n".format(i+1, user[0], user[1], int(user[2]) if lbtype == "tr" else user[2])
+        value_func = lambda user: user[2]
+        lbstring = leaderboard(lbtype, [lbtype], value_func)
     elif lbtype == "app":
-        with connect_db() as conn:
-            cursor = conn.cursor()
-
-            cursor.execute(f"SELECT rank, tetrio_username, apm, pps FROM users")
-            users = cursor.fetchall()
-            print(users)
-            users = sorted(users, key = lambda u: u[2] / u[3] / 60, reverse = True)
-            for i in range(len(users)):
-                user = users[i]
-                string += "{:<3}{:<3}{:<20}{}\n".format(i+1, user[0], user[1], user[2] / user[3] / 60)
+        value_func = lambda user: user[2] / user[3] / 60
+        lbstring = leaderboard(lbtype, ["apm", "pps"], value_func)
     elif lbtype == "vs/apm":
-        with connect_db() as conn:
-            cursor = conn.cursor()
-
-            cursor.execute(f"SELECT rank, tetrio_username, vs, apm FROM users")
-            users = cursor.fetchall()
-            users = sorted(users, key = lambda u: u[2] / u[3], reverse = True)
-            for i in range(len(users)):
-                user = users[i]
-                string += "{:<3}{:<3}{:<20}{}\n".format(i+1, user[0], user[1], user[2] / user[3])
+        value_func = lambda user: user[2] / user[3]
+        lbstring = leaderboard(lbtype, ["vs", "apm"], value_func)
     else:
         await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
         return
-    await ctx.send(string + "```")
+    await ctx.send(lbstring)
 
 TAC_GUILD_ID = 946060638231359588
 
@@ -363,7 +358,7 @@ For issues or suggestions, contact funli.```
 async def on_ready():
     create_db()
     migrate_db()
-    update_rank_roles.start()
+    # update_rank_roles.start()
     print('Logged in.\nv1.3 test')
 
 load_dotenv()
