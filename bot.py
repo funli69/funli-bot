@@ -4,16 +4,19 @@ import sqlite3
 import os
 from discord.ext import commands, tasks
 import requests
-
+import traceback
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix='f.', intents = intents, help_command = None)
 
-LEAGUE_URL = "https://ch.tetr.io/api/users/{}/summaries/league"
-USER_URL = "https://ch.tetr.io/api/users/{}"
 SEARCH_URL = 'https://ch.tetr.io/api/users/search/discord:{}'
+USER_URL   = "https://ch.tetr.io/api/users/{}"
+LEAGUE_URL = "https://ch.tetr.io/api/users/{}/summaries/league"
+SPRINT_URL = "https://ch.tetr.io/api/users/{}/summaries/40l"
+BLITZ_URL  = "https://ch.tetr.io/api/users/{}/summaries/blitz"
+ZENITH_URL = "https://ch.tetr.io/api/users/{}/summaries/zenith"
 
 def api_request(template, value):
     url = template.format(value)
@@ -63,9 +66,14 @@ def create_db():
             tetrio_username TEXT,
             rank TEXT,
             tr REAL,
+            oldtr REAL,
             apm REAL,
             vs REAL,
-            pps REAL
+            pps REAL,
+            sprint REAL,
+            blitz INTEGER,
+            zenith REAL,
+            zenithbest REAL
         )
     ''')
     conn.commit()
@@ -78,8 +86,50 @@ async def remove_all_rank_roles(member, guild):
         if role and role in member.roles:
             await member.remove_roles(role)
 
-def update_user():
-    pass
+def update_user(cursor, discord_id, username):
+    league_info = api_request(LEAGUE_URL, username)
+    rank = league_info.get("rank")
+    tr   = league_info.get("tr")
+    apm  = league_info.get("apm")
+    vs   = league_info.get("vs")
+    pps  = league_info.get("pps")
+
+    record = api_request(SPRINT_URL, username)
+    if record:
+        sprint = record["record"]["results"]["stats"]["finaltime"]
+    else:
+        sprint = -1
+
+    record = api_request(BLITZ_URL, username)
+    if record:
+        blitz = record["record"]["results"]["stats"]["score"]
+    else:
+        blitz = -1
+
+    record = api_request(ZENITH_URL, username)
+    record = record.get("record")
+    if record:
+        zenith = record["results"]["stats"]["zenith"]["altitude"]
+    else:
+        zenith = -1
+
+    record = api_request(ZENITH_URL, username)
+    record = record["best"].get("record")
+    if record:
+        zenithbest = record["results"]["stats"]["zenith"]["altitude"]
+    else:
+        zenithbest = -1
+    
+    cursor.execute("SELECT * FROM users WHERE tetrio_username == ?", (username,))
+    if cursor.fetchone():
+        cursor.execute("UPDATE users SET rank = ?, tr = ?, apm = ?, vs = ?, pps = ?, sprint = ?, blitz = ?, zenith = ?, zenithbest = ? WHERE tetrio_username = ?",
+                       (rank, tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, username))
+    else:
+        print(username)
+        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, tr, apm, vs, pps, sprint, blitz, zenith, zenithbest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (str(discord_id), username, rank, tr, apm, vs, pps, sprint, blitz, zenith, zenithbest))
+
+    return rank
 
 
 @bot.command()
@@ -99,18 +149,8 @@ async def link(ctx):
             await ctx.send(f"User {ctx.author.name} has not connected Discord to TETR.IO.")
             return 
         username = user["user"]["username"]
+        rank = update_user(cursor, ctx.author.id, username)
 
-        league_info = api_request(LEAGUE_URL, username)
-
-        rank = league_info.get("rank")
-        tr = league_info.get("tr")
-        apm = league_info.get("apm")
-        vs = league_info.get("vs")
-        pps = league_info.get("pps")
-        
-        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, tr, apm, vs, pps) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                       (str(ctx.author.id), username, rank, tr, apm, vs, pps))
-        
     rank_role = rank_to_role.get(rank)
     if not rank_role:
         await ctx.send(f"Rank '{rank}' is not recognized.")
@@ -125,7 +165,7 @@ async def link(ctx):
     await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
 
 @bot.command()
-async def link_other(ctx, discord_name: str, tetrio_name: str):
+async def link_other(ctx, discord_name: str):
     members = ctx.guild.members
     member = None
     for m in members:
@@ -143,37 +183,17 @@ async def link_other(ctx, discord_name: str, tetrio_name: str):
         existing_user = cursor.fetchone()
 
         if existing_user:
-            await ctx.send("Your account is already linked. Use 'f.rank_update' to refresh your rank.")
+            await ctx.send(f"Account '{tetrio_name}' is already linked. Use 'f.rank_update' to refresh your rank.")
             return
+
+        user = api_request(SEARCH_URL, discord_id)
         
-        user = api_request(USER_URL, tetrio_name)
         if not user:
-            await ctx.send(f"User '{tetrio_name}' not found")
-            return
+            await ctx.send(f"User {member.name} has not connected Discord to TETR.IO.")
+            return 
+        username = user["user"]["username"]
+        rank = update_user(cursor, discord_id, username)
 
-        connections = user['connections']
-        if 'discord' not in connections:
-            await ctx.send("Your TETR.IO account is not linked to a Discord account. This is needed for verification.")
-            return
-
-        if connections['discord']['id'] != discord_id:
-            await ctx.send("Your Discord ID does not match the provided TETR.IO username.")
-            return
-
-        league_info = api_request(LEAGUE_URL, tetrio_name)
-        if not league_info:
-            await ctx.send(f"Could not fetch rank data for '{tetrio_name}'.")
-            return
-        
-        rank = league_info.get("rank")
-        tr = league_info.get("tr")
-        apm = league_info.get("apm")
-        vs = league_info.get("vs")
-        pps = league_info.get("pps")
-        
-        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, tr, apm, vs, pps) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                       (discord_id, tetrio_name, rank, tr, apm, vs, pps))
-        
     rank_role = rank_to_role.get(rank)
     if not rank_role:
         await ctx.send(f"Rank '{rank}' is not recognized.")
@@ -187,31 +207,36 @@ async def link_other(ctx, discord_name: str, tetrio_name: str):
     await ctx.author.add_roles(role)
     await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
 
-lbtypes = ["tr", "apm", "vs", "pps"]
+lbtypes = ["tr", "apm", "vs", "pps", "sprint", "blitz", "zenith", "zenithbest"]
 
-def leaderboard(lbtype, fields, value_func):
+def leaderboard(lbtype, fields, value_func, reverse_sort = False):
     conn = connect_db()
     cursor = conn.cursor()
 
-    cursor.execute(f"SELECT rank, tetrio_username, {','.join(fields)} FROM users" + (f" ORDER BY {lbtype} DESC" if len(fields) == 1 else ""))
+    cursor.execute(f"SELECT rank, tetrio_username, {','.join(fields)} FROM users" + (f" ORDER BY {lbtype} {'ASC' if reverse_sort else 'DESC'}" if len(fields) == 1 else ""))
     users = cursor.fetchall()
+    users = tuple(filter(lambda fields: all(fields), users))
     if len(fields) > 1:
-        users = sorted(users, key = value_func, reverse = True)
+        users = sorted(users, key = value_func, reverse = reverse_sort)
 
     conn.close()
 
     string = f"{lbtype} leaderboard: ```"
     for i in range(len(users)):
         user = users[i]
-        string += "{:<3}{:<3}{:<20}{:.2f}\n".format(i+1, user[0], user[1], value_func(user))
+        value = value_func(user)
+        formatstring = "{:<3}{:<3}{:<20}DNF\n" if value < 0 else  ("{:<3}{:<3}{:<20}{:.2f}\n" if type(value) == float else "{:<3}{:<3}{:<20}{}\n")
+        string += formatstring.format(i+1, user[0], user[1], value)
     string += "```"
     return string
 
 @bot.command()
 async def lb(ctx, lbtype: str):
     if lbtype in lbtypes:
-        value_func = lambda user: user[2]
-        lbstring = leaderboard(lbtype, [lbtype], value_func)
+        # eh
+        sprint = lbtype == "sprint"
+        value_func = lambda user: (int(user[2]) if lbtype == "tr" else (user[2] / 1000 if sprint else user[2]))
+        lbstring = leaderboard(lbtype, [lbtype], value_func, sprint)
     elif lbtype == "app":
         value_func = lambda user: user[2] / user[3] / 60
         lbstring = leaderboard(lbtype, ["apm", "pps"], value_func)
@@ -226,7 +251,7 @@ async def lb(ctx, lbtype: str):
 TAC_GUILD_ID = 946060638231359588
 
 @tasks.loop(minutes=5)
-async def update_rank_roles():
+async def update_users():
     conn = connect_db()
     cursor = conn.cursor()
     try:
@@ -244,15 +269,11 @@ async def update_rank_roles():
         for discord_id, tetrio_username, rank in users:
             try:
                 current_rank = rank
-                league_info = api_request(LEAGUE_URL, tetrio_username)
-                if not league_info:
-                    print(f"Failed to fetch rank data for username '{tetrio_username}'.\n")
-                    continue
-
-                new_rank = league_info.get('rank')
+                new_rank = update_user(cursor, discord_id, tetrio_username)
                 print(f"*Checking rank for {tetrio_username}:")
                 print(f"Current rank in database: '{current_rank}'")
                 print(f"Fetched rank from Tetr.io: '{new_rank}'")
+                continue
 
                 # Step 1: Compare the ranks
                 if new_rank != current_rank:  # If the ranks are different, update the database and role
@@ -300,8 +321,8 @@ async def update_rank_roles():
                         print(f"{member.name} already has the correct role '{current_role_name}'.")
                     # Ensure that the member only has one rank role
                     await ensure_single_rank_role(member, guild, current_rank)
-            except Exception as e:
-                print(f"Error updating rank for Discord ID {discord_id}: {e}.\n")
+            except Exception:
+                print(f"Error updating rank for Discord ID {discord_id}: {traceback.format_exc()}.\n")
 
         conn.commit()
 
@@ -329,6 +350,10 @@ def migrate_db():
     add_column(cursor, "apm",             "REAL")
     add_column(cursor, "vs",              "REAL")
     add_column(cursor, "pps",             "REAL")
+    add_column(cursor, "sprint",          "REAL")
+    add_column(cursor, "blitz",           "INTEGER")
+    add_column(cursor, "zenith",          "REAL")
+    add_column(cursor, "zenithbest",      "REAL")
     
     conn.commit()
     conn.close()
@@ -354,7 +379,7 @@ For issues or suggestions, contact funli.```
 async def on_ready():
     create_db()
     migrate_db()
-    # update_rank_roles.start()
+    # update_users.start()
     print('Logged in.\nv1.3 test')
 
 load_dotenv()
