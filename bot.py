@@ -17,6 +17,9 @@ LEAGUE_URL = "https://ch.tetr.io/api/users/{}/summaries/league"
 SPRINT_URL = "https://ch.tetr.io/api/users/{}/summaries/40l"
 BLITZ_URL  = "https://ch.tetr.io/api/users/{}/summaries/blitz"
 ZENITH_URL = "https://ch.tetr.io/api/users/{}/summaries/zenith"
+ZEN_URL    = "https://ch.tetr.io/api/users/{}/summaries/zen"
+
+TAC_GUILD_ID = 946060638231359588
 
 def api_request(template, value):
     url = template.format(value)
@@ -65,7 +68,9 @@ def create_db():
             discord_id TEXT PRIMARY KEY,
             tetrio_username TEXT,
             rank TEXT,
+            past_rank TEXT,
             tr REAL,
+            past_tr REAL,
             oldtr REAL,
             apm REAL,
             vs REAL,
@@ -73,7 +78,8 @@ def create_db():
             sprint REAL,
             blitz INTEGER,
             zenith REAL,
-            zenithbest REAL
+            zenithbest REAL,
+            zen INTEGER
         )
     ''')
     conn.commit()
@@ -88,11 +94,13 @@ async def remove_all_rank_roles(member, guild):
 
 def update_user(cursor, discord_id, username):
     league_info = api_request(LEAGUE_URL, username)
-    rank = league_info.get("rank")
-    tr   = league_info.get("tr")
-    apm  = league_info.get("apm")
-    vs   = league_info.get("vs")
-    pps  = league_info.get("pps")
+    rank      = league_info.get("rank")
+    tr        = league_info.get("tr")
+    apm       = league_info.get("apm")
+    vs        = league_info.get("vs")
+    pps       = league_info.get("pps")
+    past_tr   = league_info["past"]["1"]["tr"]
+    past_rank = league_info["past"]["1"]["rank"]
 
     record = api_request(SPRINT_URL, username)
     if record:
@@ -119,15 +127,21 @@ def update_user(cursor, discord_id, username):
         zenithbest = record["results"]["stats"]["zenith"]["altitude"]
     else:
         zenithbest = -1
+
+    record = api_request(ZEN_URL, username)
+    if record:
+        zen = record["level"]
+    else:
+        zen = -1
     
-    cursor.execute("SELECT * FROM users WHERE tetrio_username == ?", (username,))
+    cursor.execute("SELECT * FROM users WHERE discord_id == ?", (discord_id,))
     if cursor.fetchone():
-        cursor.execute("UPDATE users SET rank = ?, tr = ?, apm = ?, vs = ?, pps = ?, sprint = ?, blitz = ?, zenith = ?, zenithbest = ? WHERE tetrio_username = ?",
-                       (rank, tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, username))
+        cursor.execute("UPDATE users SET rank = ?, past_rank = ?, tr = ?, past_tr = ?, apm = ?, vs = ?, pps = ?, sprint = ?, blitz = ?, zenith = ?, zenithbest = ?, zen = ? WHERE tetrio_username = ?",
+                       (rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen, username))
     else:
         print(username)
-        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, tr, apm, vs, pps, sprint, blitz, zenith, zenithbest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                       (str(discord_id), username, rank, tr, apm, vs, pps, sprint, blitz, zenith, zenithbest))
+        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (str(discord_id), username, rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen))
 
     return rank
 
@@ -207,17 +221,41 @@ async def link_other(ctx, discord_name: str):
     await ctx.author.add_roles(role)
     await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
 
-lbtypes = ["tr", "apm", "vs", "pps", "sprint", "blitz", "zenith", "zenithbest"]
+@bot.command()
+async def link_all(ctx):
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    guild_id = TAC_GUILD_ID
+    guild = bot.get_guild(guild_id)
+
+    count = 0
+    for member in guild.members:
+        user = api_request(SEARCH_URL, member.id)
+        if not user:
+            continue 
+
+        username = user["user"]["username"]
+        update_user(cursor, member.id, username)
+        count += 1
+        await ctx.send(f"Account {member.name} linked successfully.")
+
+    await ctx.send(f"Linked {count} members")
+    conn.commit()
+    conn.close()
+
+
+lbtypes = ["tr", "past_tr", "apm", "vs", "pps", "sprint", "blitz", "zenith", "zenithbest", "zen"]
 
 def leaderboard(lbtype, fields, value_func, reverse_sort = False):
     conn = connect_db()
     cursor = conn.cursor()
 
-    cursor.execute(f"SELECT rank, tetrio_username, {','.join(fields)} FROM users" + (f" ORDER BY {lbtype} {'ASC' if reverse_sort else 'DESC'}" if len(fields) == 1 else ""))
+    cursor.execute(f"SELECT {'past_rank' if lbtype=='past_tr' else 'rank'}, tetrio_username, {','.join(fields)} FROM users" + (f" ORDER BY {lbtype} {'ASC' if reverse_sort else 'DESC'}" if len(fields) == 1 else ""))
     users = cursor.fetchall()
     users = tuple(filter(lambda fields: all(fields), users))
     if len(fields) > 1:
-        users = sorted(users, key = value_func, reverse = reverse_sort)
+        users = sorted(users, key = value_func, reverse = not reverse_sort)
 
     conn.close()
 
@@ -247,8 +285,6 @@ async def lb(ctx, lbtype: str):
         await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
         return
     await ctx.send(lbstring)
-
-TAC_GUILD_ID = 946060638231359588
 
 @tasks.loop(minutes=5)
 async def update_users():
@@ -346,7 +382,9 @@ def migrate_db():
 
     add_column(cursor, "tetrio_username", "TEXT")
     add_column(cursor, "rank",            "TEXT")
+    add_column(cursor, "past_rank",       "TEXT")
     add_column(cursor, "tr",              "REAL")
+    add_column(cursor, "past_tr",         "REAL")
     add_column(cursor, "apm",             "REAL")
     add_column(cursor, "vs",              "REAL")
     add_column(cursor, "pps",             "REAL")
@@ -354,6 +392,7 @@ def migrate_db():
     add_column(cursor, "blitz",           "INTEGER")
     add_column(cursor, "zenith",          "REAL")
     add_column(cursor, "zenithbest",      "REAL")
+    add_column(cursor, "zen",             "INT")
     
     conn.commit()
     conn.close()
