@@ -420,7 +420,7 @@ For issues or suggestions, contact @funli or @fleaf.```
 """
     await ctx.send(help_message)
 
-
+#2
 @bot.event
 async def on_ready():
     create_db()
