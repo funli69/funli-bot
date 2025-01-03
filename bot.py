@@ -167,7 +167,7 @@ async def link(ctx):
         existing_user = cursor.fetchone()
 
         if existing_user:
-            await ctx.send("Your account is already linked. Use 'f.rank_update' to refresh your rank.")
+            await ctx.send("Your account is already linked.")
             return
 
         user = api_request(SEARCH_URL, ctx.author.id)
@@ -299,6 +299,23 @@ async def lb(ctx, lbtype: str):
         await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
         return
     await ctx.send(lbstring)
+
+async def ensure_single_rank_role(member, guild, rank_from_db):
+    # Get all roles the member currently has
+    roles = member.roles
+    rank_roles = [role for role in roles if role.name in rank_to_role.values()]
+
+    if len(rank_roles) > 1:
+        print(f"{member.name} has multiple rank roles. Removing incorrect roles.")
+        for role in rank_roles:
+            # Determine the correct role for this member based on the rank in the database
+            correct_role_name = rank_to_role.get(rank_from_db)  # Get the correct role based on the rank
+            if role.name != correct_role_name:
+                await member.remove_roles(role)
+                print(f"Removed role {role.name} from {member.name}")
+        print(' ')
+    elif len(rank_roles) == 1:
+        print("No other rank roles detected.\n")
 
 @tasks.loop(minutes=5)
 async def update_users():
