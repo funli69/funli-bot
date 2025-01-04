@@ -23,7 +23,11 @@ TAC_GUILD_ID = 946060638231359588
 
 def api_request(template, value):
     url = template.format(value)
-    response = requests.get(url)
+    headers = {
+        'User-Agent': 'funli bot',
+        'From': 'funli69',
+    }
+    response = requests.get(url, headers=headers)
     if response.status_code == 200:
         data = response.json()
         if data.get("success"):
@@ -140,7 +144,7 @@ def update_user(cursor, discord_id, username):
                        (rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen, username))
     else:
         print(username)
-        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        (str(discord_id), username, rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen))
 
     return rank
