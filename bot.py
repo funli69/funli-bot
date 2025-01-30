@@ -25,7 +25,7 @@ def api_request(template, value):
     url = template.format(value)
     headers = {
         'User-Agent': 'funli bot',
-        'From': 'funli69',
+        'From': 'funli',
     }
     response = requests.get(url, headers=headers)
     if response.status_code == 200:
@@ -138,49 +138,41 @@ def update_user(cursor, discord_id, username):
     else:
         zen = -1
     
-    cursor.execute("SELECT * FROM users WHERE discord_id == ?", (discord_id,))
-    if cursor.fetchone():
-        cursor.execute("UPDATE users SET rank = ?, past_rank = ?, tr = ?, past_tr = ?, apm = ?, vs = ?, pps = ?, sprint = ?, blitz = ?, zenith = ?, zenithbest = ?, zen = ? WHERE tetrio_username = ?",
-                       (rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen, username))
-    else:
-        print(username)
-        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                       (str(discord_id), username, rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen))
+    cursor.execute("UPDATE users SET rank = ?, past_rank = ?, tr = ?, past_tr = ?, apm = ?, vs = ?, pps = ?, sprint = ?, blitz = ?, zenith = ?, zenithbest = ?, zen = ? WHERE tetrio_username = ?",
+                    (rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen, username))
 
     return rank
 
-
-@bot.command()
-async def link(ctx):
+async def link_user(member):
     with connect_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (str(ctx.author.id),))
+        cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (id, ))
         existing_user = cursor.fetchone()
 
-        if existing_user:
-            await ctx.send("Your account is already linked.")
-            return
+        if existing_user: raise Exception("Account already linked")
 
         user = api_request(SEARCH_URL, ctx.author.id)
         
-        if not user:
-            await ctx.send(f"User {ctx.author.name} has not connected Discord to TETR.IO.")
-            return 
+        if not user: raise Exception(f"User {name} has not connected Discord to TETR.IO")
         username = user["user"]["username"]
-        rank = update_user(cursor, ctx.author.id, username)
+        rank = update_user(cursor, id, username)
 
     rank_role = rank_to_role.get(rank)
-    if not rank_role:
-        await ctx.send(f"Rank '{rank}' is not recognized.")
-        return
+    if not rank_role: raise Exception(f"Rank '{rank}' is not recognized.")
     
     role = discord.utils.get(ctx.guild.roles, name = rank_role)
-    if not role:
-        await ctx.send(f"Role '{rank_role}' not found. Please contact and admin.")
-        return
-    await remove_all_rank_roles(ctx.author, ctx.guild)
-    await ctx.author.add_roles(role)
-    await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+    if not role: raise Exception(f"Role '{rank_role}' not found. Please contact and admin.")
+
+    await remove_all_rank_roles(member, member.guild)
+    await member.add_roles(role)
+
+@bot.command()
+async def link(ctx):
+    try:
+        await link_user(ctx.author)
+        await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+    except Exception as e:
+        await ctx.send(e)
 
 @bot.command()
 async def link_other(ctx, discord_name: str):
@@ -190,40 +182,15 @@ async def link_other(ctx, discord_name: str):
         if m.name == discord_name:
             member = m
             break
-    if not member:
+    else:
         await ctx.send(f"No user '{discord_name}' in this server.")
         return
-    # might aswell 've done for other function but 2lazy4this
-    discord_id = str(member.id)
-    with connect_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT discord_id FROM users WHERE discord_id = {discord_id}")
-        existing_user = cursor.fetchone()
 
-        if existing_user:
-            await ctx.send(f"Account '{tetrio_name}' is already linked. Use 'f.rank_update' to refresh your rank.")
-            return
-
-        user = api_request(SEARCH_URL, discord_id)
-        
-        if not user:
-            await ctx.send(f"User {member.name} has not connected Discord to TETR.IO.")
-            return 
-        username = user["user"]["username"]
-        rank = update_user(cursor, discord_id, username)
-
-    rank_role = rank_to_role.get(rank)
-    if not rank_role:
-        await ctx.send(f"Rank '{rank}' is not recognized.")
-        return
-    
-    role = discord.utils.get(ctx.guild.roles, name = rank_role)
-    if not role:
-        await ctx.send(f"Role '{rank_role}' not found. Please contact and admin.")
-        return
-    await remove_all_rank_roles(ctx.author, ctx.guild)
-    await ctx.author.add_roles(role)
-    await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+    try:
+        await link_user(member)
+        await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+    except Exception as e:
+        await ctx.send(e)
 
 @bot.command()
 async def link_all(ctx):
@@ -238,11 +205,13 @@ async def link_all(ctx):
         user = api_request(SEARCH_URL, member.id)
         if not user:
             continue 
-
-        username = user["user"]["username"]
-        update_user(cursor, member.id, username)
-        count += 1
-        await ctx.send(f"Account {member.name} linked successfully.")
+        try:
+            await link_user(member)
+            await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+            count += 1
+            await ctx.send(f"Account {member.name} linked successfully.")
+        except Exception as e:
+            await ctx.send(e)
 
     await ctx.send(f"Linked {count} members")
     conn.commit()
@@ -433,6 +402,13 @@ For issues or suggestions, contact funli.```
 """
     await ctx.send(help_message)
 
+@bot.event
+async def on_member_join(member):
+    try:
+        link_user(member)
+        print(f"Linked {member.name} who just joined the server")
+    except Exception as e:
+        print(e)
 
 @bot.event
 async def on_ready():
