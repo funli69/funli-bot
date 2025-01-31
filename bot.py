@@ -411,6 +411,12 @@ async def on_member_join(member):
         print(e)
 
 @bot.event
+async def on_member_remove(member):
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM users WHERE discord_id = ?", (id, ))
+
+@bot.event
 async def on_ready():
     create_db()
     migrate_db()
