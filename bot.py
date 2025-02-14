@@ -5,6 +5,7 @@ import os
 from discord.ext import commands, tasks
 import requests
 import traceback
+from time import strftime, gmtime, time
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -12,12 +13,7 @@ intents.members = True
 bot = commands.Bot(command_prefix='f.', intents = intents, help_command = None)
 
 SEARCH_URL = 'https://ch.tetr.io/api/users/search/discord:{}'
-USER_URL   = "https://ch.tetr.io/api/users/{}"
-LEAGUE_URL = "https://ch.tetr.io/api/users/{}/summaries/league"
-SPRINT_URL = "https://ch.tetr.io/api/users/{}/summaries/40l"
-BLITZ_URL  = "https://ch.tetr.io/api/users/{}/summaries/blitz"
-ZENITH_URL = "https://ch.tetr.io/api/users/{}/summaries/zenith"
-ZEN_URL    = "https://ch.tetr.io/api/users/{}/summaries/zen"
+USER_URL   = "https://ch.tetr.io/api/users/{}/summaries"
 
 TAC_GUILD_ID = 946060638231359588
 
@@ -26,12 +22,13 @@ def api_request(template, value):
     headers = {
         'User-Agent': 'funli bot',
         'From': 'funli',
+        'X-Session-ID': '69420133780085',
     }
     response = requests.get(url, headers=headers)
     if response.status_code == 200:
         data = response.json()
         if data.get("success"):
-            return data['data']
+            return data
     return None
 
 async def remove_all_rank_roles(member, guild):
@@ -75,15 +72,13 @@ def create_db():
             past_rank TEXT,
             tr REAL,
             past_tr REAL,
-            oldtr REAL,
             apm REAL,
             vs REAL,
             pps REAL,
             sprint REAL,
             blitz INTEGER,
             zenith REAL,
-            zenithbest REAL,
-            zen INTEGER
+            zenithbest REAL
         )
     ''')
     conn.commit()
@@ -96,53 +91,6 @@ async def remove_all_rank_roles(member, guild):
         if role and role in member.roles:
             await member.remove_roles(role)
 
-def update_user(cursor, discord_id, username):
-    league_info = api_request(LEAGUE_URL, username)
-    rank      = league_info.get("rank")
-    tr        = league_info.get("tr")
-    apm       = league_info.get("apm")
-    vs        = league_info.get("vs")
-    pps       = league_info.get("pps")
-    past_tr   = league_info["past"]["1"]["tr"]
-    past_rank = league_info["past"]["1"]["rank"]
-
-    record = api_request(SPRINT_URL, username)
-    if record:
-        sprint = record["record"]["results"]["stats"]["finaltime"]
-    else:
-        sprint = -1
-
-    record = api_request(BLITZ_URL, username)
-    if record:
-        blitz = record["record"]["results"]["stats"]["score"]
-    else:
-        blitz = -1
-
-    record = api_request(ZENITH_URL, username)
-    record = record.get("record")
-    if record:
-        zenith = record["results"]["stats"]["zenith"]["altitude"]
-    else:
-        zenith = -1
-
-    record = api_request(ZENITH_URL, username)
-    record = record["best"].get("record")
-    if record:
-        zenithbest = record["results"]["stats"]["zenith"]["altitude"]
-    else:
-        zenithbest = -1
-
-    record = api_request(ZEN_URL, username)
-    if record:
-        zen = record["level"]
-    else:
-        zen = -1
-    
-    cursor.execute("UPDATE users SET rank = ?, past_rank = ?, tr = ?, past_tr = ?, apm = ?, vs = ?, pps = ?, sprint = ?, blitz = ?, zenith = ?, zenithbest = ?, zen = ? WHERE tetrio_username = ?",
-                    (rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen, username))
-
-    return rank
-
 async def link_user(member):
     with connect_db() as conn:
         cursor = conn.cursor()
@@ -151,7 +99,7 @@ async def link_user(member):
 
         if existing_user: raise Exception("Account already linked")
 
-        user = api_request(SEARCH_URL, ctx.author.id)
+        user = api_request(SEARCH_URL, ctx.author.id)['data']
         
         if not user: raise Exception(f"User {name} has not connected Discord to TETR.IO")
         username = user["user"]["username"]
@@ -202,7 +150,7 @@ async def link_all(ctx):
 
     count = 0
     for member in guild.members:
-        user = api_request(SEARCH_URL, member.id)
+        user = api_request(SEARCH_URL, member.id)['data']
         if not user:
             continue 
         try:
@@ -218,65 +166,58 @@ async def link_all(ctx):
     conn.close()
 
 
-lbtypes = ["tr", "past_tr", "apm", "vs", "pps", "sprint", "blitz", "zenith", "zenithbest", "zen"]
+# this is the name of column in users table mapped to
+# a function that transfers object returned by tetrio API
 
-def leaderboard(lbtype, fields, value_func, reverse_sort = False):
-    conn = connect_db()
-    cursor = conn.cursor()
+# rank shouldn't be a leaderboard so change name probably
+lbs = {
+    "rank":      lambda result: result["league"].get("rank", -1),
+    "tr":        lambda result: result["league"].get("tr",   -1),
+    "apm":       lambda result: result["league"].get("apm",  -1),
+    "vs":        lambda result: result["league"].get("vs",   -1),
+    "pps":       lambda result: result["league"].get("pps",  -1),
+    "past_rank": lambda result: result["league"].get("past", {}).get("1", {}).get("rank"),
+    "past_tr":   lambda result: result["league"].get("past", {}).get("1", {}).get("tr"  ),
 
-    cursor.execute(f"SELECT {'past_rank' if lbtype=='past_tr' else 'rank'}, tetrio_username, {','.join(fields)} FROM users" + (f" ORDER BY {lbtype} {'ASC' if reverse_sort else 'DESC'}" if len(fields) == 1 else ""))
-    users = cursor.fetchall()
-    users = tuple(filter(lambda fields: all(fields), users))
-    if len(fields) > 1:
-        users = sorted(users, key = value_func, reverse = not reverse_sort)
+    "sprint": lambda result: result["40l"].get("record",    {}
+                                         ).get("results",   {}
+                                         ).get("stats",     {}
+                                         ).get("finaltime", -1),
 
-    conn.close()
+    "blitz": lambda result: result["blitz"].get("record",  {}
+                                          ).get("results", {}
+                                          ).get("stats",   {}
+                                          ).get("score",   -1),
 
-    string = f"{lbtype} leaderboard: ```"
-    for i in range(len(users)):
-        user = users[i]
-        value = value_func(user)
-        formatstring = "{:<3}{:<3}{:<20}DNF\n" if value < 0 else  ("{:<3}{:<3}{:<20}{:.2f}\n" if type(value) == float else "{:<3}{:<3}{:<20}{}\n")
-        string += formatstring.format(i+1, user[0], user[1], value)
-    string += "```"
-    return string
+    "zenith": lambda result: (result["zenith"]["record"] or {} 
+                                            ).get("results", {}
+                                            ).get("zenith",  {}
+                                            ).get("score",   -1),
 
-@bot.command()
-async def lb(ctx, lbtype: str):
-    if lbtype in lbtypes:
-        # eh
-        sprint = lbtype == "sprint"
-        value_func = lambda user: (int(user[2]) if lbtype == "tr" else (user[2] / 1000 if sprint else user[2]))
-        lbstring = leaderboard(lbtype, [lbtype], value_func, sprint)
-    elif lbtype == "app":
-        value_func = lambda user: user[2] / user[3] / 60
-        lbstring = leaderboard(lbtype, ["apm", "pps"], value_func)
-    elif lbtype == "vs/apm":
-        value_func = lambda user: user[2] / user[3]
-        lbstring = leaderboard(lbtype, ["vs", "apm"], value_func)
-    else:
-        await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
-        return
-    await ctx.send(lbstring)
+    "zenithbest": lambda result: result["zenith"].get("best",    {}
+                                                ).get("result",  {}
+                                                ).get("results", {}
+                                                ).get("zenith",  {}
+                                                ).get("score",   -1),
+}
 
-async def ensure_single_rank_role(member, guild, rank_from_db):
-    # Get all roles the member currently has
-    roles = member.roles
-    rank_roles = [role for role in roles if role.name in rank_to_role.values()]
+cached_at    = gmtime()
+cached_until = time()
 
-    if len(rank_roles) > 1:
-        print(f"{member.name} has multiple rank roles. Removing incorrect roles.")
-        for role in rank_roles:
-            # Determine the correct role for this member based on the rank in the database
-            correct_role_name = rank_to_role.get(rank_from_db)  # Get the correct role based on the rank
-            if role.name != correct_role_name:
-                await member.remove_roles(role)
-                print(f"Removed role {role.name} from {member.name}")
-        print(' ')
-    elif len(rank_roles) == 1:
-        print("No other rank roles detected.\n")
+def update_user(cursor, discord_id, tetrio_username):
+    values = []
+    response = api_request(USER_URL, tetrio_username)
+    for lb in lbs:
+        values.append(lbs[lb](response['data']))
+    
+    setstring = ', '.join(f'{lb} = ?' for lb in lbs)
 
-@tasks.loop(minutes=5)
+    cursor.execute(f"UPDATE users SET {setstring} WHERE tetrio_username = ?",
+                    values + [tetrio_username])
+    cached_until = response['cache']['cached_until'] // 1000
+    return response['data']['league'].get('rank')
+
+@tasks.loop(hours=6)
 async def update_users():
     conn = connect_db()
     cursor = conn.cursor()
@@ -348,7 +289,7 @@ async def update_users():
                     await ensure_single_rank_role(member, guild, current_rank)
             except Exception:
                 print(f"Error updating rank for Discord ID {discord_id}: {traceback.format_exc()}.\n")
-
+        cached_at = gmtime()
         conn.commit()
 
     except Exception as e:
@@ -356,6 +297,65 @@ async def update_users():
     finally:
         conn.close()
         print(' ')
+
+async def leaderboard(lbtype, fields, value_func, reverse_sort = False):
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    string = f"{lbtype} leaderboard: ```"
+    if time() > cached_until:
+        await update_users()
+
+    cursor.execute(f"SELECT {'past_rank' if lbtype=='past_tr' else 'rank'}, tetrio_username, {','.join(fields)} FROM users" + (f" ORDER BY {lbtype} {'ASC' if reverse_sort else 'DESC'}" if len(fields) == 1 else ""))
+    users = cursor.fetchall()
+    users = tuple(filter(lambda fields: all(fields), users))
+    if len(fields) > 1:
+        users = sorted(users, key = value_func, reverse = not reverse_sort)
+
+    conn.close()
+
+    for i in range(len(users)):
+        user = users[i]
+        value = value_func(user)
+        formatstring = "{:<3}{:<3}{:<20}DNF\n" if value < 0 else  ("{:<3}{:<3}{:<20}{:.2f}\n" if type(value) == float else "{:<3}{:<3}{:<20}{}\n")
+        string += formatstring.format(i+1, user[0], user[1], value)
+    string += f"```\n-# {strftime("%c GMT", cached_at)}"
+    return string
+
+@bot.command()
+async def lb(ctx, lbtype: str):
+    if lbtype in lbs:
+        # eh
+        sprint = lbtype == "sprint"
+        value_func = lambda user: (int(user[2]) if lbtype == "tr" else (user[2] / 1000 if sprint else user[2]))
+        lbstring = await leaderboard(lbtype, [lbtype], value_func, sprint)
+    elif lbtype == "app":
+        value_func = lambda user: user[2] / user[3] / 60
+        lbstring = await leaderboard(lbtype, ["apm", "pps"], value_func)
+    elif lbtype == "vs/apm":
+        value_func = lambda user: user[2] / user[3]
+        lbstring = await leaderboard(lbtype, ["vs", "apm"], value_func)
+    else:
+        await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
+        return
+    await ctx.send(lbstring)
+
+async def ensure_single_rank_role(member, guild, rank_from_db):
+    # Get all roles the member currently has
+    roles = member.roles
+    rank_roles = [role for role in roles if role.name in rank_to_role.values()]
+
+    if len(rank_roles) > 1:
+        print(f"{member.name} has multiple rank roles. Removing incorrect roles.")
+        for role in rank_roles:
+            # Determine the correct role for this member based on the rank in the database
+            correct_role_name = rank_to_role.get(rank_from_db)  # Get the correct role based on the rank
+            if role.name != correct_role_name:
+                await member.remove_roles(role)
+                print(f"Removed role {role.name} from {member.name}")
+        print(' ')
+    elif len(rank_roles) == 1:
+        print("No other rank roles detected.\n")
 
 def add_column(cursor, name, sqltype):
     try:
@@ -381,7 +381,6 @@ def migrate_db():
     add_column(cursor, "blitz",           "INTEGER")
     add_column(cursor, "zenith",          "REAL")
     add_column(cursor, "zenithbest",      "REAL")
-    add_column(cursor, "zen",             "INT")
     
     conn.commit()
     conn.close()
@@ -420,7 +419,7 @@ async def on_member_remove(member):
 async def on_ready():
     create_db()
     migrate_db()
-    # update_users.start()
+    update_users.start()
     print('Logged in.\nv1.3 test')
 
 load_dotenv()
