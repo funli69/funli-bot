@@ -214,6 +214,7 @@ def update_user(cursor, discord_id, tetrio_username):
 
     cursor.execute(f"UPDATE users SET {setstring} WHERE tetrio_username = ?",
                     values + [tetrio_username])
+    global cached_until
     cached_until = response['cache']['cached_until'] // 1000
     return response['data']['league'].get('rank')
 
@@ -289,6 +290,7 @@ async def update_users():
                     await ensure_single_rank_role(member, guild, current_rank)
             except Exception:
                 print(f"Error updating rank for Discord ID {discord_id}: {traceback.format_exc()}.\n")
+        global cached_at
         cached_at = gmtime()
         conn.commit()
 
@@ -298,12 +300,15 @@ async def update_users():
         conn.close()
         print(' ')
 
-async def leaderboard(lbtype, fields, value_func, reverse_sort = False):
+async def leaderboard(ctx, lbtype, fields, value_func, reverse_sort = False):
     conn = connect_db()
     cursor = conn.cursor()
 
     string = f"{lbtype} leaderboard: ```"
+    needs_update = False
     if time() > cached_until:
+        needs_update = True
+        message = await ctx.send("updating...")
         await update_users()
 
     cursor.execute(f"SELECT {'past_rank' if lbtype=='past_tr' else 'rank'}, tetrio_username, {','.join(fields)} FROM users" + (f" ORDER BY {lbtype} {'ASC' if reverse_sort else 'DESC'}" if len(fields) == 1 else ""))
@@ -320,7 +325,10 @@ async def leaderboard(lbtype, fields, value_func, reverse_sort = False):
         formatstring = "{:<3}{:<3}{:<20}DNF\n" if value < 0 else  ("{:<3}{:<3}{:<20}{:.2f}\n" if type(value) == float else "{:<3}{:<3}{:<20}{}\n")
         string += formatstring.format(i+1, user[0], user[1], value)
     string += f"```\n-# {strftime("%c GMT", cached_at)}"
-    return string
+    if needs_update:
+        await message.edit(content=string)
+    else:
+        await ctx.send(string)
 
 @bot.command()
 async def lb(ctx, lbtype: str):
@@ -328,17 +336,15 @@ async def lb(ctx, lbtype: str):
         # eh
         sprint = lbtype == "sprint"
         value_func = lambda user: (int(user[2]) if lbtype == "tr" else (user[2] / 1000 if sprint else user[2]))
-        lbstring = await leaderboard(lbtype, [lbtype], value_func, sprint)
+        lbstring = await leaderboard(ctx, lbtype, [lbtype], value_func, sprint)
     elif lbtype == "app":
         value_func = lambda user: user[2] / user[3] / 60
-        lbstring = await leaderboard(lbtype, ["apm", "pps"], value_func)
+        lbstring = await leaderboard(ctx, lbtype, ["apm", "pps"], value_func)
     elif lbtype == "vs/apm":
         value_func = lambda user: user[2] / user[3]
-        lbstring = await leaderboard(lbtype, ["vs", "apm"], value_func)
+        lbstring = await leaderboard(ctx, lbtype, ["vs", "apm"], value_func)
     else:
         await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
-        return
-    await ctx.send(lbstring)
 
 async def ensure_single_rank_role(member, guild, rank_from_db):
     # Get all roles the member currently has
