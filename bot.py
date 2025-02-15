@@ -1,10 +1,13 @@
+import discord.context_managers
 from dotenv import load_dotenv
 import discord
 import sqlite3
 import os
 from discord.ext import commands, tasks
+from discord import app_commands
 import requests
 import traceback
+from typing import Optional
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -20,6 +23,11 @@ ZENITH_URL = "https://ch.tetr.io/api/users/{}/summaries/zenith"
 ZEN_URL    = "https://ch.tetr.io/api/users/{}/summaries/zen"
 
 TAC_GUILD_ID = 946060638231359588
+
+MODS_ROLE_ID = [1246417236046905387,
+                946061277183230002,
+                1308704910409207869,
+                ]
 
 def api_request(template, value):
     url = template.format(value)
@@ -163,8 +171,9 @@ def update_user(cursor, discord_id, username):
     return rank
 
 
-@bot.command()
-async def link(ctx):
+@bot.hybrid_command(name='link', description='Link your TETR.IO account to get your rank updated automatically')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def link(ctx: commands.Context):
     with connect_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (str(ctx.author.id),))
@@ -177,7 +186,7 @@ async def link(ctx):
         user = api_request(SEARCH_URL, ctx.author.id)
         
         if not user:
-            await ctx.send(f"User {ctx.author.name} has not connected Discord to TETR.IO.")
+            await ctx.send(f"User {ctx.author.display_name} has not connected Discord to TETR.IO.")
             return 
         username = user["user"]["username"]
         rank = update_user(cursor, ctx.author.id, username)
@@ -195,52 +204,17 @@ async def link(ctx):
     await ctx.author.add_roles(role)
     await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
 
-@bot.command()
-async def link_other(ctx, discord_name: str):
-    members = ctx.guild.members
-    member = None
-    for m in members:
-        if m.name == discord_name:
-            member = m
-            break
-    if not member:
-        await ctx.send(f"No user '{discord_name}' in this server.")
-        return
-    # might aswell 've done for other function but 2lazy4this
-    discord_id = str(member.id)
-    with connect_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT discord_id FROM users WHERE discord_id = {discord_id}")
-        existing_user = cursor.fetchone()
+async def mods_check(ctx: discord.Member) -> bool:
+    user_role_ids = [role.id for role in ctx.roles]
+    return any(role_id in user_role_ids for role_id in MODS_ROLE_ID)
 
-        if existing_user:
-            await ctx.send(f"Account '{member.name}' is already linked. Use 'f.rank_update' to refresh your rank.")
-            return
-        
-        user = api_request(SEARCH_URL, discord_id)
-        username = user["user"]["username"]
-
-        if not user:
-            await ctx.send(f"User {member.name} has not connected Discord to TETR.IO.")
-            return 
-        
-        rank = update_user(cursor, discord_id, username)
-
-    rank_role = rank_to_role.get(rank)
-    if not rank_role:
-        await ctx.send(f"Rank '{rank}' is not recognized.")
+@bot.hybrid_command(name = 'link_all', description = 'the name says it all')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def link_all(ctx: commands.Context):
+    if not await mods_check(ctx):
+        await ctx.send(f'{ctx.author.display_name}, you do not have permission to use this command.')
         return
     
-    role = discord.utils.get(ctx.guild.roles, name = rank_role)
-    if not role:
-        await ctx.send(f"Role '{rank_role}' not found. Please contact and admin.")
-        return
-    await remove_all_rank_roles(ctx.author, ctx.guild)
-    await ctx.author.add_roles(role)
-    await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
-
-@bot.command()
-async def link_all(ctx):
     conn = connect_db()
     cursor = conn.cursor()
 
@@ -265,7 +239,7 @@ async def link_all(ctx):
 
 lbtypes = ["tr", "past_tr", "apm", "vs", "pps", "sprint", "blitz", "zenith", "zenithbest", "zen"]
 
-def leaderboard(lbtype, fields, value_func, reverse_sort = False):
+def leaderboard(lbtype, fields, value_func, reverse_sort = False, amount = None):
     conn = connect_db()
     cursor = conn.cursor()
 
@@ -278,7 +252,12 @@ def leaderboard(lbtype, fields, value_func, reverse_sort = False):
     conn.close()
 
     string = f"{lbtype} leaderboard: ```"
-    for i in range(len(users)):
+
+    if amount is None: 
+        amount = len(users)
+
+    count = min(len(users), amount)
+    for i in range(count):
         user = users[i]
         value = value_func(user)
         formatstring = "{:<3}{:<3}{:<20}DNF\n" if value < 0 else  ("{:<3}{:<3}{:<20}{:.2f}\n" if type(value) == float else "{:<3}{:<3}{:<20}{}\n")
@@ -286,34 +265,33 @@ def leaderboard(lbtype, fields, value_func, reverse_sort = False):
     string += "```"
     return string
 
-@bot.command()
-async def lb(ctx, lbtype: str):
+@bot.hybrid_command(name='lb', description='Display a local leaderboard')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def lb(ctx: commands.Context, lbtype: str, amount: Optional[int] = None): 
     if lbtype in lbtypes:
         # eh
         sprint = lbtype == "sprint"
         value_func = lambda user: (int(user[2]) if lbtype == "tr" else (user[2] / 1000 if sprint else user[2]))
-        lbstring = leaderboard(lbtype, [lbtype], value_func, sprint)
+        lbstring = leaderboard(lbtype, [lbtype], value_func, sprint, amount=amount)
     elif lbtype == "app":
         value_func = lambda user: user[2] / user[3] / 60
-        lbstring = leaderboard(lbtype, ["apm", "pps"], value_func)
+        lbstring = leaderboard(lbtype, ["apm", "pps"], value_func, amount=amount)
     elif lbtype == "vs/apm":
         value_func = lambda user: user[2] / user[3]
-        lbstring = leaderboard(lbtype, ["vs", "apm"], value_func)
+        lbstring = leaderboard(lbtype, ["vs", "apm"], value_func, amount=amount)
     else:
         await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
         return
     await ctx.send(lbstring)
 
 async def ensure_single_rank_role(member, guild, rank_from_db):
-    # Get all roles the member currently has
     roles = member.roles
     rank_roles = [role for role in roles if role.name in rank_to_role.values()]
 
     if len(rank_roles) > 1:
         print(f"{member.name} has multiple rank roles. Removing incorrect roles.")
         for role in rank_roles:
-            # Determine the correct role for this member based on the rank in the database
-            correct_role_name = rank_to_role.get(rank_from_db)  # Get the correct role based on the rank
+            correct_role_name = rank_to_role.get(rank_from_db) 
             if role.name != correct_role_name:
                 await member.remove_roles(role)
                 print(f"Removed role {role.name} from {member.name}")
@@ -321,7 +299,7 @@ async def ensure_single_rank_role(member, guild, rank_from_db):
     elif len(rank_roles) == 1:
         print("No other rank roles detected.\n")
 
-@tasks.loop(minutes=5)
+@tasks.loop(minutes=120) #2 hours real
 async def update_users():
     conn = connect_db()
     cursor = conn.cursor()
@@ -355,7 +333,7 @@ async def update_users():
                         "UPDATE users SET rank = ? WHERE discord_id = ?",
                         (new_rank, discord_id)
                     )
-                    print(f"Updated rank for {tetrio_username} (<@{discord_id}>) to {new_rank}.")
+                    print(f"Updated rank for {member.name} (<@{discord_id}>) to {new_rank}.")
 
                     new_role_name = rank_to_role.get(new_rank)
                     if not new_role_name:
@@ -404,7 +382,6 @@ def add_column(cursor, name, sqltype):
         print(f"Column '{name}' already exists.")
 
 def migrate_db():
-    """Handles database schema migrations, ensuring necessary columns exist."""
     conn = connect_db()
     cursor = conn.cursor()
     print(' ')
@@ -441,13 +418,23 @@ For issues or suggestions, contact @funli or @fleaf.```
 """
     await ctx.send(help_message)
 
-#2
+
 @bot.event
 async def on_ready():
     create_db()
     migrate_db()
-    # update_users.start()
-    print('Logged in.\nv2 beta')
+    update_users.start()
+    
+    #sync slash commands
+    try:
+        guild = discord.Object(id=TAC_GUILD_ID)
+        synced = await bot.tree.sync(guild=guild)
+        print(f'Successfully synced {len(synced)} commands.\n')
+
+    except Exception as e:
+        print(f'Error syncing: {e}\n')
+
+    print('Logged in.\nv3 beta')
 
 load_dotenv()
 bot.run(os.getenv("TOKEN"))
