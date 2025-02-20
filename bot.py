@@ -140,14 +140,6 @@ async def link(ctx: commands.Context):
     await remove_all_rank_roles(member, member.guild)
     await member.add_roles(role)
 
-@bot.command()
-async def link(ctx):
-    try:
-        await link_user(ctx.author)
-        await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
-    except Exception as e:
-        await ctx.send(e)
-
 async def mods_check(ctx: discord.Member) -> bool:
     user_role_ids = [role.id for role in ctx.roles]
     return any(role_id in user_role_ids for role_id in MODS_ROLE_ID)
@@ -326,7 +318,7 @@ async def update_users():
         conn.close()
         print(' ')
 
-def leaderboard(ctx, lbtype, fields, value_func, reverse_sort = False, amount = None):
+async def leaderboard(ctx, lbtype, fields, value_func, reverse_sort = False, amount = None):
     conn = connect_db()
     cursor = conn.cursor()
 
@@ -346,14 +338,12 @@ def leaderboard(ctx, lbtype, fields, value_func, reverse_sort = False, amount = 
     if amount is None: 
         amount = len(users)
 
-    count = min(len(users), amount)
-    for i in range(count):
+    amount = min(len(users), amount)
+    for i in range(amount):
         user = users[i]
         value = value_func(user)
         formatstring = "{:<3}{:<3}{:<20}DNF\n" if value < 0 else  ("{:<3}{:<3}{:<20}{:.2f}\n" if type(value) == float else "{:<3}{:<3}{:<20}{}\n")
         string += formatstring.format(i+1, user[0], user[1], value)
-    string += "```"
-    return string
   
     string += f"```\n-# {strftime("%c GMT", cached_at)}"
     if needs_update:
@@ -364,21 +354,19 @@ def leaderboard(ctx, lbtype, fields, value_func, reverse_sort = False, amount = 
 @bot.hybrid_command(name='lb', description='Display a local leaderboard')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
 async def lb(ctx: commands.Context, lbtype: str, amount: Optional[int] = None): 
-    if lbtype in lbtypes:
+    if lbtype in lbs:
         # eh
         sprint = lbtype == "sprint"
         value_func = lambda user: (int(user[2]) if lbtype == "tr" else (user[2] / 1000 if sprint else user[2]))
-        lbstring = leaderboard(ctx, lbtype, [lbtype], value_func, sprint, amount=amount)
+        await leaderboard(ctx, lbtype, [lbtype], value_func, sprint, amount=amount)
     elif lbtype == "app":
         value_func = lambda user: user[2] / user[3] / 60
-        lbstring = leaderboard(ctx, lbtype, ["apm", "pps"], value_func, amount=amount)
+        await leaderboard(ctx, lbtype, ["apm", "pps"], value_func, amount=amount)
     elif lbtype == "vs/apm":
         value_func = lambda user: user[2] / user[3]
-        lbstring = leaderboard(ctx, lbtype, ["vs", "apm"], value_func, amount=amount)
+        await leaderboard(ctx, lbtype, ["vs", "apm"], value_func, amount=amount)
     else:
         await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
-        return
-    await ctx.send(lbstring)
 
 def add_column(cursor, name, sqltype):
     try:
@@ -418,7 +406,7 @@ f.help <command> - Show a command usage. (not available now :LMFAOOMFGHAHAH:)
 f.link - Link your TETR.IO account to get your rank updated automatically. 
 f.lb - Display a local leaderboard.
 
-For issues or suggestions, contact @funli or @fleaf.```
+For issues or suggestions, contact @.funli. or @flleaf.```
 """
     await ctx.send(help_message)
 
