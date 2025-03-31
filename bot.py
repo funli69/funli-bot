@@ -246,7 +246,7 @@ async def update_users():
             try:
                 current_rank = rank
                 new_rank = update_user(cursor, discord_id, tetrio_username)
-                print(f"*Checking rank for {tetrio_username}:")
+                print(f"*Checking rank for {member.name} ({tetrio_username}):")
                 print(f"Current rank in database: '{current_rank}'")
                 print(f"Fetched rank from Tetr.io: '{new_rank}'")
 
@@ -274,10 +274,10 @@ async def update_users():
                         continue
 
                     if new_role not in member.roles:
-                        print(f"Assigning new rank role '{new_role_name}' to {member.name}")
+                        print(f"Assigning new rank role '{new_role_name}' to {member.name}\n")
                         await member.add_roles(new_role)
                     else:
-                        print(f"{member.name} already has the correct role '{new_role_name}'.")
+                        print(f"{member.name} already has the correct role '{new_role_name}'\n")
                 else:
                     member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
                     if not member:
@@ -286,10 +286,10 @@ async def update_users():
                     current_role_name = rank_to_role.get(current_rank)
                     current_role = discord.utils.get(guild.roles, name=current_role_name)
                     if current_role and current_role not in member.roles:
-                        print(f"{member.name} has the wrong role. Assigning '{current_role_name}' role.")
+                        print(f"{member.name} has the wrong role. Assigning '{current_role_name}' role")
                         await member.add_roles(current_role)
                     else:
-                        print(f"{member.name} already has the correct role '{current_role_name}'.")
+                        print(f"{member.name} already has the correct role '{current_role_name}'")
                     
                     await ensure_single_rank_role(member, guild, current_rank)
             except Exception:
@@ -331,7 +331,7 @@ async def leaderboard(ctx, lbtype, fields, value_func, reverse_sort = False, amo
         formatstring = "{:<3}{:<3}{:<20}DNF\n" if value < 0 else  ("{:<3}{:<3}{:<20}{:.2f}\n" if type(value) == float else "{:<3}{:<3}{:<20}{}\n")
         string += formatstring.format(i+1, user[0], user[1], value)
   
-    string += f"```\n-# {strftime("%c GMT", cached_at)}"
+    string += f"```\n-# {strftime('%c GMT', cached_at)}"
     if needs_update:
         await message.edit(content=string)
     else:
@@ -400,7 +400,7 @@ For issues or suggestions, contact @.funli. or @flleaf.```
 async def on_member_join(member):
     try:
         update_user(member)
-        print(f"Linked {member.name} who just joined the server")
+        print(f"Linked {member.name} who just joined the server.\n")
     except Exception as e:
         print(e)
 
