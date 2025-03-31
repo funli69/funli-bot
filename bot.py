@@ -7,6 +7,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import requests
 import traceback
+from time import strftime, gmtime, time
 from typing import Optional
 
 intents = discord.Intents.default()
@@ -15,12 +16,7 @@ intents.members = True
 bot = commands.Bot(command_prefix='f.', intents = intents, help_command = None)
 
 SEARCH_URL = 'https://ch.tetr.io/api/users/search/discord:{}'
-USER_URL   = "https://ch.tetr.io/api/users/{}"
-LEAGUE_URL = "https://ch.tetr.io/api/users/{}/summaries/league"
-SPRINT_URL = "https://ch.tetr.io/api/users/{}/summaries/40l"
-BLITZ_URL  = "https://ch.tetr.io/api/users/{}/summaries/blitz"
-ZENITH_URL = "https://ch.tetr.io/api/users/{}/summaries/zenith"
-ZEN_URL    = "https://ch.tetr.io/api/users/{}/summaries/zen"
+USER_URL   = "https://ch.tetr.io/api/users/{}/summaries"
 
 TAC_GUILD_ID = 946060638231359588
 
@@ -33,13 +29,14 @@ def api_request(template, value):
     url = template.format(value)
     headers = {
         'User-Agent': 'funli bot',
-        'From': 'funli69',
+        'From': 'funli',
+        'X-Session-ID': '69420133780085',
     }
     response = requests.get(url, headers=headers)
     if response.status_code == 200:
         data = response.json()
         if data.get("success"):
-            return data['data']
+            return data
     return None
 
 async def remove_all_rank_roles(member, guild):
@@ -83,15 +80,13 @@ def create_db():
             past_rank TEXT,
             tr REAL,
             past_tr REAL,
-            oldtr REAL,
             apm REAL,
             vs REAL,
             pps REAL,
             sprint REAL,
             blitz INTEGER,
             zenith REAL,
-            zenithbest REAL,
-            zen INTEGER
+            zenithbest REAL
         )
     ''')
     conn.commit()
@@ -117,92 +112,33 @@ async def ensure_single_rank_role(member, guild):
     elif len(rank_roles) == 1:
         print(f"{member.name} already has the correct rank role '{rank_roles[0].name}'.")
 
-def update_user(cursor, discord_id, username):
-    league_info = api_request(LEAGUE_URL, username)
-    rank      = league_info.get("rank")
-    tr        = league_info.get("tr")
-    apm       = league_info.get("apm")
-    vs        = league_info.get("vs")
-    pps       = league_info.get("pps")
-    past_tr   = league_info["past"]["1"]["tr"]
-    past_rank = league_info["past"]["1"]["rank"]
-
-    record = api_request(SPRINT_URL, username)
-    if record:
-        sprint = record["record"]["results"]["stats"]["finaltime"]
-    else:
-        sprint = -1
-
-    record = api_request(BLITZ_URL, username)
-    if record:
-        blitz = record["record"]["results"]["stats"]["score"]
-    else:
-        blitz = -1
-
-    record = api_request(ZENITH_URL, username)
-    record = record.get("record")
-    if record:
-        zenith = record["results"]["stats"]["zenith"]["altitude"]
-    else:
-        zenith = -1
-
-    record = api_request(ZENITH_URL, username)
-    record = record["best"].get("record")
-    if record:
-        zenithbest = record["results"]["stats"]["zenith"]["altitude"]
-    else:
-        zenithbest = -1
-
-    record = api_request(ZEN_URL, username)
-    if record:
-        zen = record["level"]
-    else:
-        zen = -1
-    
-    cursor.execute("SELECT * FROM users WHERE discord_id == ?", (discord_id,))
-    if cursor.fetchone():
-        cursor.execute("UPDATE users SET rank = ?, past_rank = ?, tr = ?, past_tr = ?, apm = ?, vs = ?, pps = ?, sprint = ?, blitz = ?, zenith = ?, zenithbest = ?, zen = ? WHERE tetrio_username = ?",
-                       (rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen, username))
-    else:
-        print(username)
-        cursor.execute("INSERT INTO users (discord_id, tetrio_username, rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                       (str(discord_id), username, rank, past_rank, tr, past_tr, apm, vs, pps, sprint, blitz, zenith, zenithbest, zen))
-
-    return rank
-
-
 @bot.hybrid_command(name='link', description='Link your TETR.IO account to get your rank updated automatically')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
 async def link(ctx: commands.Context):
     with connect_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (str(ctx.author.id),))
+        cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (id, ))
         existing_user = cursor.fetchone()
 
-        if existing_user:
-            await ctx.send("Your account is already linked.")
-            return
+        if existing_user: raise Exception("Account already linked")
 
-        user = api_request(SEARCH_URL, ctx.author.id)
+        user = api_request(SEARCH_URL, ctx.author.id)['data']
         
         if not user:
             await ctx.send(f"User {ctx.author.display_name} has not connected Discord to TETR.IO.")
-            return 
+            return
+
         username = user["user"]["username"]
-        rank = update_user(cursor, ctx.author.id, username)
+        rank = update_user(cursor, id, username)
 
     rank_role = rank_to_role.get(rank)
-    if not rank_role:
-        await ctx.send(f"Rank '{rank}' is not recognized.")
-        return
+    if not rank_role: raise Exception(f"Rank '{rank}' is not recognized.")
     
     role = discord.utils.get(ctx.guild.roles, name = rank_role)
-    if not role:
-        await ctx.send(f"Role '{rank_role}' not found. Please contact and admin.")
-        return
-    await remove_all_rank_roles(ctx.author, ctx.guild)
-    await ctx.author.add_roles(role)
-    await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+    if not role: raise Exception(f"Role '{rank_role}' not found. Please contact and admin.")
+
+    await remove_all_rank_roles(member, member.guild)
+    await member.add_roles(role)
 
 async def mods_check(ctx: discord.Member) -> bool:
     user_role_ids = [role.id for role in ctx.roles]
@@ -223,66 +159,72 @@ async def link_all(ctx: commands.Context):
 
     count = 0
     for member in guild.members:
-        user = api_request(SEARCH_URL, member.id)
+        user = api_request(SEARCH_URL, member.id)['data']
         if not user:
             continue 
-
-        username = user["user"]["username"]
-        update_user(cursor, member.id, username)
-        count += 1
-        await ctx.send(f"Account {member.name} linked successfully.")
+        try:
+            await link_user(member)
+            await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+            count += 1
+            await ctx.send(f"Account {member.name} linked successfully.")
+        except Exception as e:
+            await ctx.send(e)
 
     await ctx.send(f"Linked {count} members")
     conn.commit()
     conn.close()
 
+# this is the name of column in users table mapped to
+# a function that transfers object returned by tetrio API
 
-lbtypes = ["tr", "past_tr", "apm", "vs", "pps", "sprint", "blitz", "zenith", "zenithbest", "zen"]
+# rank shouldn't be a leaderboard so change name probably
+lbs = {
+    "rank":      lambda result: result["league"].get("rank", -1),
+    "tr":        lambda result: result["league"].get("tr",   -1),
+    "apm":       lambda result: result["league"].get("apm",  -1),
+    "vs":        lambda result: result["league"].get("vs",   -1),
+    "pps":       lambda result: result["league"].get("pps",  -1),
+    "past_rank": lambda result: result["league"].get("past", {}).get("1", {}).get("rank"),
+    "past_tr":   lambda result: result["league"].get("past", {}).get("1", {}).get("tr"  ),
 
-def leaderboard(lbtype, fields, value_func, reverse_sort = False, amount = None):
-    conn = connect_db()
-    cursor = conn.cursor()
+    "sprint": lambda result: result["40l"].get("record",    {}
+                                         ).get("results",   {}
+                                         ).get("stats",     {}
+                                         ).get("finaltime", -1),
 
-    cursor.execute(f"SELECT {'past_rank' if lbtype=='past_tr' else 'rank'}, tetrio_username, {','.join(fields)} FROM users" + (f" ORDER BY {lbtype} {'ASC' if reverse_sort else 'DESC'}" if len(fields) == 1 else ""))
-    users = cursor.fetchall()
-    users = tuple(filter(lambda fields: all(fields), users))
-    if len(fields) > 1:
-        users = sorted(users, key = value_func, reverse = not reverse_sort)
+    "blitz": lambda result: result["blitz"].get("record",  {}
+                                          ).get("results", {}
+                                          ).get("stats",   {}
+                                          ).get("score",   -1),
 
-    conn.close()
+    "zenith": lambda result: (result["zenith"]["record"] or {} 
+                                            ).get("results", {}
+                                            ).get("zenith",  {}
+                                            ).get("score",   -1),
 
-    string = f"{lbtype} leaderboard: ```"
+    "zenithbest": lambda result: result["zenith"].get("best",    {}
+                                                ).get("result",  {}
+                                                ).get("results", {}
+                                                ).get("zenith",  {}
+                                                ).get("score",   -1),
+}
 
-    if amount is None: 
-        amount = len(users)
+cached_at    = gmtime()
+cached_until = time()
 
-    count = min(len(users), amount)
-    for i in range(count):
-        user = users[i]
-        value = value_func(user)
-        formatstring = "{:<3}{:<3}{:<20}DNF\n" if value < 0 else  ("{:<3}{:<3}{:<20}{:.2f}\n" if type(value) == float else "{:<3}{:<3}{:<20}{}\n")
-        string += formatstring.format(i+1, user[0], user[1], value)
-    string += "```"
-    return string
+def update_user(cursor, discord_id, tetrio_username):
+    values = []
+    response = api_request(USER_URL, tetrio_username)
+    for lb in lbs:
+        values.append(lbs[lb](response['data']))
+    
+    setstring = ', '.join(f'{lb} = ?' for lb in lbs)
 
-@bot.hybrid_command(name='lb', description='Display a local leaderboard')
-@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
-async def lb(ctx: commands.Context, lbtype: str, amount: Optional[int] = None): 
-    if lbtype in lbtypes:
-        # eh
-        sprint = lbtype == "sprint"
-        value_func = lambda user: (int(user[2]) if lbtype == "tr" else (user[2] / 1000 if sprint else user[2]))
-        lbstring = leaderboard(lbtype, [lbtype], value_func, sprint, amount=amount)
-    elif lbtype == "app":
-        value_func = lambda user: user[2] / user[3] / 60
-        lbstring = leaderboard(lbtype, ["apm", "pps"], value_func, amount=amount)
-    elif lbtype == "vs/apm":
-        value_func = lambda user: user[2] / user[3]
-        lbstring = leaderboard(lbtype, ["vs", "apm"], value_func, amount=amount)
-    else:
-        await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
-        return
-    await ctx.send(lbstring)
+    cursor.execute(f"UPDATE users SET {setstring} WHERE tetrio_username = ?",
+                    values + [tetrio_username])
+    global cached_until
+    cached_until = response['cache']['cached_until'] // 1000
+    return response['data']['league'].get('rank')
 
 async def ensure_single_rank_role(member, guild, rank_from_db):
     roles = member.roles
@@ -299,7 +241,7 @@ async def ensure_single_rank_role(member, guild, rank_from_db):
     elif len(rank_roles) == 1:
         print("No other rank roles detected.\n")
 
-@tasks.loop(minutes=120) #2 hours real
+@tasks.loop(hours=6)
 async def update_users():
     conn = connect_db()
     cursor = conn.cursor()
@@ -366,7 +308,8 @@ async def update_users():
                     await ensure_single_rank_role(member, guild, current_rank)
             except Exception:
                 print(f"Error updating rank for Discord ID {discord_id}: {traceback.format_exc()}.\n")
-
+        global cached_at
+        cached_at = gmtime()
         conn.commit()
 
     except Exception as e:
@@ -374,6 +317,56 @@ async def update_users():
     finally:
         conn.close()
         print(' ')
+
+async def leaderboard(ctx, lbtype, fields, value_func, reverse_sort = False, amount = None):
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    string = f"{lbtype} leaderboard: ```"
+    needs_update = False
+    if time() > cached_until:
+        needs_update = True
+        message = await ctx.send("updating...")
+        await update_users()
+
+    cursor.execute(f"SELECT {'past_rank' if lbtype=='past_tr' else 'rank'}, tetrio_username, {','.join(fields)} FROM users" + (f" ORDER BY {lbtype} {'ASC' if reverse_sort else 'DESC'}" if len(fields) == 1 else ""))
+    users = cursor.fetchall()
+    users = tuple(filter(lambda fields: all(fields), users))
+    if len(fields) > 1:
+        users = sorted(users, key = value_func, reverse = not reverse_sort)
+
+    if amount is None: 
+        amount = len(users)
+
+    amount = min(len(users), amount)
+    for i in range(amount):
+        user = users[i]
+        value = value_func(user)
+        formatstring = "{:<3}{:<3}{:<20}DNF\n" if value < 0 else  ("{:<3}{:<3}{:<20}{:.2f}\n" if type(value) == float else "{:<3}{:<3}{:<20}{}\n")
+        string += formatstring.format(i+1, user[0], user[1], value)
+  
+    string += f"```\n-# {strftime("%c GMT", cached_at)}"
+    if needs_update:
+        await message.edit(content=string)
+    else:
+        await ctx.send(string)
+
+@bot.hybrid_command(name='lb', description='Display a local leaderboard')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def lb(ctx: commands.Context, lbtype: str, amount: Optional[int] = None): 
+    if lbtype in lbs:
+        # eh
+        sprint = lbtype == "sprint"
+        value_func = lambda user: (int(user[2]) if lbtype == "tr" else (user[2] / 1000 if sprint else user[2]))
+        await leaderboard(ctx, lbtype, [lbtype], value_func, sprint, amount=amount)
+    elif lbtype == "app":
+        value_func = lambda user: user[2] / user[3] / 60
+        await leaderboard(ctx, lbtype, ["apm", "pps"], value_func, amount=amount)
+    elif lbtype == "vs/apm":
+        value_func = lambda user: user[2] / user[3]
+        await leaderboard(ctx, lbtype, ["vs", "apm"], value_func, amount=amount)
+    else:
+        await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
 
 def add_column(cursor, name, sqltype):
     try:
@@ -398,7 +391,6 @@ def migrate_db():
     add_column(cursor, "blitz",           "INTEGER")
     add_column(cursor, "zenith",          "REAL")
     add_column(cursor, "zenithbest",      "REAL")
-    add_column(cursor, "zen",             "INT")
     
     conn.commit()
     conn.close()
@@ -414,10 +406,23 @@ f.help <command> - Show a command usage. (not available now :LMFAOOMFGHAHAH:)
 f.link - Link your TETR.IO account to get your rank updated automatically. 
 f.lb - Display a local leaderboard.
 
-For issues or suggestions, contact @funli or @fleaf.```
+For issues or suggestions, contact @.funli. or @flleaf.```
 """
     await ctx.send(help_message)
 
+@bot.event
+async def on_member_join(member):
+    try:
+        link_user(member)
+        print(f"Linked {member.name} who just joined the server")
+    except Exception as e:
+        print(e)
+
+@bot.event
+async def on_member_remove(member):
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM users WHERE discord_id = ?", (id, ))
 
 @bot.event
 async def on_ready():
