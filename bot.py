@@ -92,25 +92,9 @@ def create_db():
     conn.commit()
     conn.close()
 
-async def remove_all_rank_roles(member, guild):
-    """Remove all rank roles from a member."""
-    for rank_name in rank_to_role.values():
-        role = discord.utils.get(guild.roles, name=rank_name)
-        if role and role in member.roles:
-            await member.remove_roles(role)
+#why are there 2 similar function, auto merge funni
+#deleted btw (ensure-sigle-rank-role & remove-all-rank-role)
 
-async def ensure_single_rank_role(member, guild):
-    roles = member.roles
-    rank_roles = [role for role in roles if role.name in rank_to_role.values()]
-    if len(rank_roles) > 1:
-        print(f"{member.name} has multiple rank roles. Removing incorrect roles.")
-        for role in rank_roles:
-            correct_role_name = rank_to_role.get(member.rank) 
-            if role.name != correct_role_name:
-                await member.remove_roles(role)
-                print(f"Removed role {role.name} from {member.name}")
-    elif len(rank_roles) == 1:
-        print(f"{member.name} already has the correct rank role '{rank_roles[0].name}'.")
 
 @bot.hybrid_command(name='link', description='Link your TETR.IO account to get your rank updated automatically')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
@@ -137,8 +121,8 @@ async def link(ctx: commands.Context):
     role = discord.utils.get(ctx.guild.roles, name = rank_role)
     if not role: raise Exception(f"Role '{rank_role}' not found. Please contact and admin.")
 
-    await remove_all_rank_roles(member, member.guild)
-    await member.add_roles(role)
+    await remove_all_rank_roles(ctx, ctx.guild)
+    await ctx.add_roles(role)
 
 async def mods_check(ctx: discord.Member) -> bool:
     user_role_ids = [role.id for role in ctx.roles]
@@ -163,8 +147,10 @@ async def link_all(ctx: commands.Context):
         if not user:
             continue 
         try:
-            await link_user(member)
-            await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+            username = user["user"]["username"]
+            await update_user(cursor, guild, username) #should be updare-user instead of link-user
+            #await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
+            #idk how to fix kekw so archived
             count += 1
             await ctx.send(f"Account {member.name} linked successfully.")
         except Exception as e:
@@ -226,7 +212,7 @@ def update_user(cursor, discord_id, tetrio_username):
     cached_until = response['cache']['cached_until'] // 1000
     return response['data']['league'].get('rank')
 
-async def ensure_single_rank_role(member, guild, rank_from_db):
+async def ensure_single_rank_role(member, guild, rank_from_db):  #idk what guild do but lets just keep it for now lol
     roles = member.roles
     rank_roles = [role for role in roles if role.name in rank_to_role.values()]
 
@@ -413,7 +399,7 @@ For issues or suggestions, contact @.funli. or @flleaf.```
 @bot.event
 async def on_member_join(member):
     try:
-        link_user(member)
+        update_user(member)
         print(f"Linked {member.name} who just joined the server")
     except Exception as e:
         print(e)
