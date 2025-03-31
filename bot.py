@@ -99,12 +99,18 @@ def create_db():
 @bot.hybrid_command(name='link', description='Link your TETR.IO account to get your rank updated automatically')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
 async def link(ctx: commands.Context):
+
+    await ctx.defer() #no more error
+
     with connect_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (ctx.author.id, ))
         existing_user = cursor.fetchone()
 
-        if existing_user: raise Exception("Account already linked")
+        if existing_user: 
+            await ctx.send ("Account already linked")
+            #raise Exception("Account already linked")
+            return
 
         user = api_request(SEARCH_URL, ctx.author.id)['data']
         
@@ -116,10 +122,16 @@ async def link(ctx: commands.Context):
         rank = update_user(cursor, ctx.author.id, username)
 
     rank_role = rank_to_role.get(rank)
-    if not rank_role: raise Exception(f"Rank '{rank}' is not recognized.")
+    if not rank_role:
+        await ctx.send (f"Rank '{rank}' is not recognized.")
+        #raise Exception(f"Rank '{rank}' is not recognized.")
+        return
     
     role = discord.utils.get(ctx.guild.roles, name = rank_role)
-    if not role: raise Exception(f"Role '{rank_role}' not found. Please contact and admin.")
+    if not role: 
+        await ctx.send (f"Role '{rank_role}' not found. Please contact and admin.")
+        #raise Exception(f"Role '{rank_role}' not found. Please contact and admin.")
+        return
 
     await remove_all_rank_roles(ctx, ctx.guild)
     await ctx.add_roles(role)
@@ -244,6 +256,7 @@ async def update_users():
 
         for discord_id, tetrio_username, rank in users:
             try:
+                member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
                 current_rank = rank
                 new_rank = update_user(cursor, discord_id, tetrio_username)
                 print(f"*Checking rank for {member.name} ({tetrio_username}):")
@@ -251,7 +264,7 @@ async def update_users():
                 print(f"Fetched rank from Tetr.io: '{new_rank}'")
 
                 if new_rank != current_rank:  
-                    member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
+                    #member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id)) ---  moved upward
                     if not member:
                         continue
 
@@ -279,7 +292,7 @@ async def update_users():
                     else:
                         print(f"{member.name} already has the correct role '{new_role_name}'\n")
                 else:
-                    member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
+                    #member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
                     if not member:
                         continue
 
