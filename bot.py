@@ -101,7 +101,7 @@ def create_db():
 async def link(ctx: commands.Context):
     with connect_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (id, ))
+        cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (ctx.author.id, ))
         existing_user = cursor.fetchone()
 
         if existing_user: raise Exception("Account already linked")
@@ -113,7 +113,7 @@ async def link(ctx: commands.Context):
             return
 
         username = user["user"]["username"]
-        rank = update_user(cursor, id, username)
+        rank = update_user(cursor, ctx.author.id, username)
 
     rank_role = rank_to_role.get(rank)
     if not rank_role: raise Exception(f"Rank '{rank}' is not recognized.")
