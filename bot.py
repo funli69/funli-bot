@@ -137,7 +137,7 @@ async def link(ctx: commands.Context):
     await ctx.add_roles(role)
 
 async def mods_check(ctx: discord.Member) -> bool:
-    user_role_ids = [role.id for role in ctx.roles]
+    user_role_ids = [role.id for role in ctx.author.roles]
     return any(role_id in user_role_ids for role_id in MODS_ROLE_ID)
 
 @bot.hybrid_command(name = 'link_all', description = 'the name says it all')
@@ -366,6 +366,58 @@ async def lb(ctx: commands.Context, lbtype: str, amount: Optional[int] = None):
         await leaderboard(ctx, lbtype, ["vs", "apm"], value_func, amount=amount)
     else:
         await ctx.send(f"'{lbtype}' is not a valid leaderboard type")
+
+@bot.hybrid_command(name='achievement_lb', description='Display a local achievement leaderboard')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def achlb(ctx: commands.Context, id: int, amount: Optional[int] = None): 
+    info = api_request('https://ch.tetr.io/api/achievements/{}', id)
+    if info == None:
+        await ctx.send('no such achievement')
+        return
+
+    message = await ctx.send("updating...")
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT tetrio_username FROM users')
+    users = cursor.fetchall()
+
+    values = {} 
+    for user in users:
+        result = api_request(USER_URL, user[0])
+        if not result:
+            continue
+        achievements = result['data']['achievements']
+        ach = next(filter(lambda ach: ach['k'] == id, achievements), None)
+        if not ach or 'v' not in ach:
+            print('not found')
+            continue
+        values[user[0]] = ach['v']
+        if not values[user[0]]:
+            print('not found')
+
+    values = sorted(values.items(), key=lambda item: item[1], reverse=True)
+
+    if amount is None: 
+        amount = len(values)
+
+    amount = min(len(values), amount)
+
+    name = info['data']['achievement']['name']
+    vt   = info['data']['achievement']['vt']
+    string = f'{name} leaderboard: ```'
+    # invert for certain value types
+    if vt in [3, 5, 6]:
+        values = list(map(lambda item: [item[0], -item[1]], values))
+    if vt in [2, 3]:
+        values = list(map(lambda item: [item[0], item[1] / 1000], values))
+
+    for i in range(amount):
+        string += '{:<3}{:<20}{}\n'.format(i + 1, values[i][0], values[i][1])
+    string += '```'
+
+    await message.edit(content=string)
 
 def add_column(cursor, name, sqltype):
     try:
