@@ -83,7 +83,7 @@ def create_db():
             apm REAL,
             vs REAL,
             pps REAL,
-            sprint REAL,
+            "40l" REAL,
             blitz INTEGER,
             zenith REAL,
             zenithbest REAL
@@ -112,14 +112,15 @@ async def link(ctx: commands.Context):
             #raise Exception("Account already linked")
             return
 
-        user = api_request(SEARCH_URL, ctx.author.id)['data']
+        response = api_request(SEARCH_URL, ctx.author.id)
+        user = response.get('data') if response else None
         
         if not user:
             await ctx.send(f"User {ctx.author.display_name} has not connected Discord to TETR.IO.")
             return
 
         username = user["user"]["username"]
-        rank = update_user(cursor, ctx.author.id, username)
+        rank = await update_user(cursor, ctx.author.id, username)
 
     rank_role = rank_to_role.get(rank)
     if not rank_role:
@@ -134,16 +135,16 @@ async def link(ctx: commands.Context):
         return
 
     await remove_all_rank_roles(ctx, ctx.guild)
-    await ctx.add_roles(role)
+    await ctx.author.add_roles(role)
 
-async def mods_check(ctx: discord.Member) -> bool:
-    user_role_ids = [role.id for role in ctx.author.roles]
+async def mods_check(member: discord.Member) -> bool:
+    user_role_ids = [role.id for role in member.roles]
     return any(role_id in user_role_ids for role_id in MODS_ROLE_ID)
 
 @bot.hybrid_command(name = 'link_all', description = 'the name says it all')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
 async def link_all(ctx: commands.Context):
-    if not await mods_check(ctx):
+    if not await mods_check(ctx.author):
         await ctx.send(f'{ctx.author.display_name}, you do not have permission to use this command.')
         return
     
@@ -155,12 +156,12 @@ async def link_all(ctx: commands.Context):
 
     count = 0
     for member in guild.members:
-        user = api_request(SEARCH_URL, member.id)['data']
+        user = api_request(SEARCH_URL, member.id)["data"]
         if not user:
             continue 
         try:
             username = user["user"]["username"]
-            await update_user(cursor, guild, username) #should be updare-user instead of link-user
+            await update_user(cursor, member.id, username) #should be updare-user instead of link-user
             #await ctx.send(f"Account linked successfully! Rank role '{rank_role}' assigned.")
             #idk how to fix kekw so archived
             count += 1
@@ -185,10 +186,10 @@ lbs = {
     "past_rank": lambda result: result["league"].get("past", {}).get("1", {}).get("rank"),
     "past_tr":   lambda result: result["league"].get("past", {}).get("1", {}).get("tr"  ),
 
-    "sprint": lambda result: result["40l"].get("record",    {}
-                                         ).get("results",   {}
-                                         ).get("stats",     {}
-                                         ).get("finaltime", -1),
+    "40l": lambda result: result["40l"].get("record",    {}
+                                      ).get("results",   {}
+                                      ).get("stats",     {}
+                                      ).get("finaltime", -1),
 
     "blitz": lambda result: result["blitz"].get("record",  {}
                                           ).get("results", {}
@@ -210,19 +211,34 @@ lbs = {
 cached_at    = gmtime()
 cached_until = time()
 
-def update_user(cursor, discord_id, tetrio_username):
+async def update_user(cursor, discord_id, tetrio_username): #idk
     values = []
-    response = api_request(USER_URL, tetrio_username)
-    for lb in lbs:
-        values.append(lbs[lb](response['data']))
-    
-    setstring = ', '.join(f'{lb} = ?' for lb in lbs)
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM users WHERE discord_id = ?", (discord_id,))
+        exists = cursor.fetchone()
 
-    cursor.execute(f"UPDATE users SET {setstring} WHERE tetrio_username = ?",
-                    values + [tetrio_username])
-    global cached_until
-    cached_until = response['cache']['cached_until'] // 1000
-    return response['data']['league'].get('rank')
+        if not exists:
+            tetrio_username = api_request(SEARCH_URL, discord_id)
+            cursor.execute("INSERT INTO users (discord_id, tetrio_username) VALUES (?,?)", (discord_id, tetrio_username))
+            conn.commit()
+
+        response = api_request(USER_URL, tetrio_username)
+
+        for lb in lbs:
+            try:
+                values.append(lbs[lb](response))
+            except Exception as e:
+                print(f"[update_user] Failed to extract {lb} for {tetrio_username}: {e}")
+                values.append(None) #ye this is where the errors come from ig
+    
+        setstring = ', '.join(f'"{lb}" = ?' for lb in lbs)
+
+        cursor.execute(f"UPDATE users SET {setstring} WHERE discord_id = ?",
+                        values + [discord_id])
+        global cached_until
+        cached_until = response['cache']['cached_until'] // 1000
+        return response['data']['league'].get('rank')
 
 async def ensure_single_rank_role(member, guild, rank_from_db):  #idk what guild do but lets just keep it for now lol
     roles = member.roles
@@ -256,9 +272,17 @@ async def update_users():
 
         for discord_id, tetrio_username, rank in users:
             try:
-                member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
+                try:
+                    member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id)) #fix current error
+                except discord.NotFound:
+                    print(f"User {discord_id} left the server. Removing from DB.")
+                    with connect_db() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM users WHERE discord_id = ?", (discord_id,))
+                        conn.commit()
+                        continue
                 current_rank = rank
-                new_rank = update_user(cursor, discord_id, tetrio_username)
+                new_rank = await update_user(cursor, discord_id, tetrio_username) #ah
                 print(f"*Checking rank for {member.name} ({tetrio_username}):")
                 print(f"Current rank in database: '{current_rank}'")
                 print(f"Fetched rank from Tetr.io: '{new_rank}'")
@@ -350,12 +374,14 @@ async def leaderboard(ctx, lbtype, fields, value_func, reverse_sort = False, amo
     else:
         await ctx.send(string)
 
+    conn.close() #oh
+
 @bot.hybrid_command(name='lb', description='Display a local leaderboard')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
 async def lb(ctx: commands.Context, lbtype: str, amount: Optional[int] = None): 
     if lbtype in lbs:
         # eh
-        sprint = lbtype == "sprint"
+        sprint = lbtype == "40l"
         value_func = lambda user: (int(user[2]) if lbtype == "tr" else (user[2] / 1000 if sprint else user[2]))
         await leaderboard(ctx, lbtype, [lbtype], value_func, sprint, amount=amount)
     elif lbtype == "app":
@@ -438,7 +464,7 @@ def migrate_db():
     add_column(cursor, "apm",             "REAL")
     add_column(cursor, "vs",              "REAL")
     add_column(cursor, "pps",             "REAL")
-    add_column(cursor, "sprint",          "REAL")
+    add_column(cursor, "40l",             "REAL")
     add_column(cursor, "blitz",           "INTEGER")
     add_column(cursor, "zenith",          "REAL")
     add_column(cursor, "zenithbest",      "REAL")
@@ -473,13 +499,19 @@ async def on_member_join(member):
 async def on_member_remove(member):
     with connect_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM users WHERE discord_id = ?", (id, ))
+        cursor.execute("DELETE FROM users WHERE discord_id = ?", (member.id, ))
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    await bot.process_commands(message)
 
 @bot.event
 async def on_ready():
     create_db()
     migrate_db()
-    update_users.start()
+    #update_users.start()
     
     #sync slash commands
     try:
