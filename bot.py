@@ -7,6 +7,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import requests
 import traceback
+from datetime import datetime, timezone
 from time import strftime, gmtime, time
 from typing import Optional
 
@@ -20,9 +21,9 @@ USER_URL   = "https://ch.tetr.io/api/users/{}/summaries"
 
 TAC_GUILD_ID = 946060638231359588
 
-MODS_ROLE_ID = [1246417236046905387,
-                946061277183230002,
-                1308704910409207869,
+MODS_ROLE = ["CEO of Stupid",
+                "Tetris",
+                "Temp.M"
                 ]
 
 def api_request(template, value):
@@ -67,7 +68,9 @@ rank_to_role = {
 }
 
 def connect_db():
-    return sqlite3.connect('user-data.db')
+    conn = sqlite3.connect("user-data.db")
+    conn.execute("PRAGMA foreign_keys = ON") #new for registration 
+    return conn
 
 def create_db():
     conn = connect_db()
@@ -89,8 +92,21 @@ def create_db():
             zenithbest REAL
         )
     ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS registration_board (
+            discord_id TEXT PRIMARY KEY ,
+            tetrio_username TEXT NOT NULL,
+            registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
+        )
+    ''')
     conn.commit()
     conn.close()
+
+def roles_check(member: discord.Member, ALLOWED_ROLES_NAMES: list[str]) -> bool:
+    user_role_names = [role.name for role in member.roles]
+    return any(role_name in user_role_names for role_name in ALLOWED_ROLES_NAMES)
 
 #why are there 2 similar function, auto merge funni
 #deleted btw (ensure-sigle-rank-role & remove-all-rank-role)
@@ -137,14 +153,10 @@ async def link(ctx: commands.Context):
     await remove_all_rank_roles(ctx, ctx.guild)
     await ctx.author.add_roles(role)
 
-async def mods_check(member: discord.Member) -> bool:
-    user_role_ids = [role.id for role in member.roles]
-    return any(role_id in user_role_ids for role_id in MODS_ROLE_ID)
-
 @bot.hybrid_command(name = 'link_all', description = 'the name says it all')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
 async def link_all(ctx: commands.Context):
-    if not await mods_check(ctx.author):
+    if not await roles_check(ctx.author, MODS_ROLE):
         await ctx.send(f'{ctx.author.display_name}, you do not have permission to use this command.')
         return
     
@@ -445,6 +457,113 @@ async def achlb(ctx: commands.Context, id: int, amount: Optional[int] = None):
 
     await message.edit(content=string)
 
+REG_START = int(datetime(2025, 4, 13, 0, 0, tzinfo=timezone.utc).timestamp()) # april 13
+REG_END = int(datetime(2025, 4, 19, 23, 59, 59, tzinfo=timezone.utc).timestamp()) # april 19
+
+@bot.hybrid_command(name = 'register', description = 'Register for the current tournament')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def register(ctx: commands.Context):
+
+    await ctx.defer()
+
+    allowed_roles =[
+        "S- Rank",
+        "S Rank",
+        "S+ Rank",
+        "SS Rank",
+        "Lower Echelon's Pardon"
+    ]
+    if not roles_check(ctx.author, allowed_roles):
+        await ctx.send("You are not qualified for this tournament.")
+        return
+    
+    now = int(time())
+    if now < REG_START or REG_END < now:
+        utc_str = strftime("%Y-%m-%d %H:%M:%S", gmtime(now))
+        await ctx.send(f"Registration is closed. Current UTC time: `{utc_str}`.\nRegistration is open from April 13 to April 19 (GMT +0).")
+        return
+    
+    discord_id = str(ctx.author.id)
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT tetrio_username FROM users WHERE discord_id = ?", (discord_id,))
+        users_result = cursor.fetchone()
+
+        tetrio_username = users_result[0]
+
+        if not users_result:
+            await ctx.send("You have not linked your account yet. Please use /link.")
+            return
+
+        cursor.execute("SELECT * FROM registration_board WHERE discord_id =?", (discord_id,))
+        register_result = cursor.fetchone()
+
+        if register_result:
+            await ctx.send("You have registered already.")
+            return
+        
+        cursor.execute("INSERT INTO registration_board (discord_id, tetrio_username) VALUES (?, ?)",
+              (discord_id, tetrio_username))
+        conn.commit()
+        
+    await ctx.send("Registration completed. Use `/registration_show` to see a list of registered players.")
+
+@bot.hybrid_command(name = 'registration_show', description = 'Show a list of registered player(s)')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def registration_show(ctx: commands.Context):
+    await ctx.defer()
+
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT registration_board.tetrio_username, registration_board.discord_id, users.rank, users.tr
+            FROM registration_board
+            JOIN users ON registration_board.discord_id = users.discord_id
+            ORDER BY users.rank DESC
+        ''')
+        results = cursor.fetchall()
+
+        if not results:
+            await ctx.send("No players have registered yet.")
+            return
+
+        output = "**ACG Season 2 registration board:**\n```ini\n"  #change name each tourney ig
+        output += f"{'Seed #':<7} {'Tetrio Username':<20} {'Discord ID':<30} {'Rank':<10} {'TR':<10}\n"
+        output += "-" * 85 + "\n"
+
+        for index, row in enumerate(results, start=1):
+            tetrio_username = row[0]
+            discord_id = f"@{row[1]}"
+            rank = row[2] if row[2] else "Not found"
+            tr = round(row[3], 2) if row[3] is not None else 0.00
+
+    output += f"{index:<7} {tetrio_username:<20} {discord_id:<30} {rank:<10} {tr:<10.2f}\n"
+
+    output += "```"
+        
+    await ctx.send(output)
+
+@bot.hybrid_command(name='unregister', description='Unregister from the current tournament')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def unregister(ctx: commands.Context):
+    await ctx.defer()
+
+    discord_id = str(ctx.author.id)
+
+    with connect_db() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM registration_board WHERE discord_id = ?", (discord_id,))
+        if not cursor.fetchone():
+            await ctx.send("You have not registered.")
+            return
+
+        cursor.execute("DELETE FROM registration_board WHERE discord_id = ?", (discord_id,))
+        conn.commit()
+
+    await ctx.send("You have been successfully unregistered from the tournament.")
+
 def add_column(cursor, name, sqltype):
     try:
         cursor.execute(f"ALTER TABLE users ADD COLUMN {name} {sqltype}")
@@ -500,6 +619,7 @@ async def on_member_remove(member):
     with connect_db() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM users WHERE discord_id = ?", (member.id, ))
+        conn.commit() #ah
 
 @bot.event
 async def on_message(message):
