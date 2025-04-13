@@ -120,7 +120,7 @@ async def link(ctx: commands.Context):
 
     with connect_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (ctx.author.id, ))
+        cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (ctx.author.id,))
         existing_user = cursor.fetchone()
 
         if existing_user: 
@@ -129,7 +129,7 @@ async def link(ctx: commands.Context):
             return
 
         response = api_request(SEARCH_URL, ctx.author.id)
-        user = response.get('data') if response else None
+        user = response.get("data", {}).get("user") if response and response.get("success") else None
         
         if not user:
             await ctx.send(f"User {ctx.author.display_name} has not connected Discord to TETR.IO.")
