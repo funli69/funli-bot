@@ -135,7 +135,7 @@ async def link(ctx: commands.Context):
             await ctx.send(f"User {ctx.author.display_name} has not connected Discord to TETR.IO.")
             return
 
-        username = user["user"]["username"]
+        username = user["username"]
         rank = await update_user(cursor, ctx.author.id, username)
 
     rank_role = rank_to_role.get(rank)
@@ -489,11 +489,11 @@ async def register(ctx: commands.Context):
         cursor.execute("SELECT tetrio_username FROM users WHERE discord_id = ?", (discord_id,))
         users_result = cursor.fetchone()
 
-        tetrio_username = users_result[0]
-
         if not users_result:
             await ctx.send("You have not linked your account yet. Please use /link.")
             return
+        
+        tetrio_username = users_result[0] #moved down 
 
         cursor.execute("SELECT * FROM registration_board WHERE discord_id =?", (discord_id,))
         register_result = cursor.fetchone()
