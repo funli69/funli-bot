@@ -9,7 +9,7 @@ import requests
 import traceback
 from datetime import datetime, timezone
 from time import strftime, gmtime, time
-from typing import Optional
+from typing import Optional, Literal
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -68,7 +68,7 @@ rank_to_role = {
 }
 
 def connect_db():
-    conn = sqlite3.connect("user-data.db")
+    conn = sqlite3.connect("data.db")
     conn.execute("PRAGMA foreign_keys = ON") #new for registration 
     return conn
 
@@ -99,6 +99,16 @@ def create_db():
             tetrio_username TEXT NOT NULL,
             registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS mods (
+            name TEXT PRIMARY KEY,
+            category TEXT CHECK( category IN ('chesstris','chesstris blitz','acg','endurance') ),
+            status TEXT CHECK( status IN ('core','secured','unsecured','wild','abandoned') ),
+            rules TEXT,
+            flavor TEXT,
+            command TEXT
         )
     ''')
     conn.commit()
@@ -563,6 +573,32 @@ async def unregister(ctx: commands.Context):
         conn.commit()
 
     await ctx.send("You have been successfully unregistered from the tournament.")
+
+
+@bot.hybrid_command(name='mods', description='Show which mods are available')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def list_mods(ctx: commands.Context, series: Literal['chesstris', 'chesstris blitz', 'acg', 'endurance']):
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, status FROM mods WHERE category = ?", (series, ))
+        mods = cursor.fetchall()
+    string = '```\n'
+    string += '\n'.join(['{:<20}{}'.format(mod[0], mod[1]) for mod in mods])
+    string += '\n```'
+    await ctx.send(string, ephemeral=True)
+
+@bot.hybrid_command(name='mod', description='Show mod infomation')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def describe(ctx: commands.Context, title: str):
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM mods WHERE name = ?", (title, ))
+        mod = cursor.fetchone()
+    if not mod:
+        await ctx.send('mod not found', ephemeral=True)
+        return
+    string = '{}\n*{}*\nrulset: {}\n```{}```'.format(mod[0], mod[4], mod[3], mod[5])
+    await ctx.send(string, ephemeral=True)
 
 def add_column(cursor, name, sqltype):
     try:
