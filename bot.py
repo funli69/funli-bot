@@ -142,7 +142,7 @@ async def link(ctx: commands.Context):
         user = response.get("data", {}).get("user") if response and response.get("success") else None
         
         if not user:
-            await ctx.send(f"User {ctx.author.display_name} has not connected Discord to TETR.IO.")
+            await ctx.send(f"User {ctx.author.display_name} has not connected Discord to TETR.IO. Or it's not public")
             return
 
         username = user["username"]
@@ -160,8 +160,9 @@ async def link(ctx: commands.Context):
         #raise Exception(f"Role '{rank_role}' not found. Please contact and admin.")
         return
 
-    await remove_all_rank_roles(ctx, ctx.guild)
+    await remove_all_rank_roles(ctx.author, ctx.guild)
     await ctx.author.add_roles(role)
+    await ctx.send(f"Account linked to {username}")
 
 @bot.hybrid_command(name = 'link_all', description = 'the name says it all')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
@@ -241,7 +242,6 @@ async def update_user(cursor, discord_id, tetrio_username): #idk
         exists = cursor.fetchone()
 
         if not exists:
-            tetrio_username = api_request(SEARCH_URL, discord_id)
             cursor.execute("INSERT INTO users (discord_id, tetrio_username) VALUES (?,?)", (discord_id, tetrio_username))
             conn.commit()
 
@@ -249,10 +249,12 @@ async def update_user(cursor, discord_id, tetrio_username): #idk
 
         for lb in lbs:
             try:
-                values.append(lbs[lb](response))
+                values.append(lbs[lb](response['data']))
             except Exception as e:
                 print(f"[update_user] Failed to extract {lb} for {tetrio_username}: {e}")
                 values.append(None) #ye this is where the errors come from ig
+
+                                    #not anymore
     
         setstring = ', '.join(f'"{lb}" = ?' for lb in lbs)
 
@@ -602,8 +604,8 @@ async def describe(ctx: commands.Context, title: str):
 
 def add_column(cursor, name, sqltype):
     try:
-        cursor.execute(f"ALTER TABLE users ADD COLUMN {name} {sqltype}")
-    except sqlite3.OperationalError:
+        cursor.execute(f"ALTER TABLE users ADD COLUMN `{name}` {sqltype}")
+    except sqlite3.OperationalError as e:
         print(f"Column '{name}' already exists.")
 
 def migrate_db():
