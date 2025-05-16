@@ -9,7 +9,7 @@ import requests
 import traceback
 from datetime import datetime, timezone
 from time import strftime, gmtime, time
-from typing import Optional
+from typing import Optional, Literal
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -68,7 +68,7 @@ rank_to_role = {
 }
 
 def connect_db():
-    conn = sqlite3.connect("user-data.db")
+    conn = sqlite3.connect("data.db")
     conn.execute("PRAGMA foreign_keys = ON") #new for registration 
     return conn
 
@@ -94,11 +94,36 @@ def create_db():
     ''')
 
     cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tournaments (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            registration_start TIMESTAMP NOT NULL,
+            registration_end TIMESTAMP NOT NULL,
+            time TIMESTAMP NOT NULL,
+            minimum_rank TEXT,
+            maximum_rank TEXT
+        )
+    ''')
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS registration_board (
-            discord_id TEXT PRIMARY KEY ,
+            id INTEGER PRIMARY KEY,
+            discord_id TEXT,
+            tournament_id INT,
             tetrio_username TEXT NOT NULL,
             registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
+            FOREIGN KEY (discord_id) REFERENCES users(discord_id) ON DELETE CASCADE,
+            FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS mods (
+            name TEXT PRIMARY KEY,
+            category TEXT CHECK( category IN ('chesstris','chesstris blitz','acg','endurance') ),
+            status TEXT CHECK( status IN ('core','secured','unsecured','wild','abandoned') ),
+            rules TEXT,
+            flavor TEXT,
+            command TEXT
         )
     ''')
     conn.commit()
@@ -115,9 +140,6 @@ def roles_check(member: discord.Member, ALLOWED_ROLES_NAMES: list[str]) -> bool:
 @bot.hybrid_command(name='link', description='Link your TETR.IO account to get your rank updated automatically')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
 async def link(ctx: commands.Context):
-
-    await ctx.defer() #no more error
-
     with connect_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (ctx.author.id,))
@@ -132,7 +154,7 @@ async def link(ctx: commands.Context):
         user = response.get("data", {}).get("user") if response and response.get("success") else None
         
         if not user:
-            await ctx.send(f"User {ctx.author.display_name} has not connected Discord to TETR.IO.")
+            await ctx.send(f"User {ctx.author.display_name} has not connected Discord to TETR.IO. Or it's not public")
             return
 
         username = user["username"]
@@ -150,8 +172,9 @@ async def link(ctx: commands.Context):
         #raise Exception(f"Role '{rank_role}' not found. Please contact and admin.")
         return
 
-    await remove_all_rank_roles(ctx, ctx.guild)
+    await remove_all_rank_roles(ctx.author, ctx.guild)
     await ctx.author.add_roles(role)
+    await ctx.send(f"Account linked to {username}")
 
 @bot.hybrid_command(name = 'link_all', description = 'the name says it all')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
@@ -231,7 +254,6 @@ async def update_user(cursor, discord_id, tetrio_username): #idk
         exists = cursor.fetchone()
 
         if not exists:
-            tetrio_username = api_request(SEARCH_URL, discord_id)
             cursor.execute("INSERT INTO users (discord_id, tetrio_username) VALUES (?,?)", (discord_id, tetrio_username))
             conn.commit()
 
@@ -239,10 +261,12 @@ async def update_user(cursor, discord_id, tetrio_username): #idk
 
         for lb in lbs:
             try:
-                values.append(lbs[lb](response))
+                values.append(lbs[lb](response['data']))
             except Exception as e:
                 print(f"[update_user] Failed to extract {lb} for {tetrio_username}: {e}")
                 values.append(None) #ye this is where the errors come from ig
+
+                                    #not anymore
     
         setstring = ', '.join(f'"{lb}" = ?' for lb in lbs)
 
@@ -460,27 +484,84 @@ async def achlb(ctx: commands.Context, id: int, amount: Optional[int] = None):
 REG_START = int(datetime(2025, 4, 13, 0, 0, tzinfo=timezone.utc).timestamp()) # april 13
 REG_END = int(datetime(2025, 4, 19, 23, 59, 59, tzinfo=timezone.utc).timestamp()) # april 19
 
-@bot.hybrid_command(name = 'register', description = 'Register for the current tournament')
+@bot.hybrid_command(name = 'host', description = 'Host a tournament (if you are an admin)')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
-async def register(ctx: commands.Context):
+async def host_tournament(ctx: commands.Context, name: str, registration_start: str, registration_end: str, start_time: str, rank_floor: Literal[tuple(rank_to_role)], rank_cap: Literal[tuple(rank_to_role)]):
+    if not roles_check(ctx.author, MODS_ROLE):
+        ctx.send("nuh uh")
+    dtformat = "%m/%d/%y %H:%M"
+    try:
+        registration_start = datetime.strptime(registration_start, dtformat)
+        registration_end   = datetime.strptime(registration_end,   dtformat)
+        start_time         = datetime.strptime(start_time,         dtformat)
+    except ValueError:
+        await ctx.send("Wrong datetime format.", ephemeral=True)
+    
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO tournaments (name, registration_start, registration_end, time,       minimum_rank, maximum_rank) VALUES (?, ?, ?, ?, ?, ?)",
+                                                (name, registration_start, registration_end, start_time, rank_floor,   rank_cap))
+        conn.commit()
+    await ctx.send("Yes.", ephemeral=True)
 
-    await ctx.defer()
+@bot.hybrid_command(name = 'tournaments', description = 'List all the tournaments')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def list_tournaments(ctx: commands.Context):
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, id, time FROM tournaments")
+        tournaments = cursor.fetchall()
+    response = "```"
+    for tournament in tournaments:
+        response += f"{tournament[0]} [{tournament[1]}]\n{tournament[2]}\n{'=' * 15}\n"
+    response += "```"
+    await ctx.send(response, ephemeral=True)
 
-    allowed_roles =[
-        "S- Rank",
-        "S Rank",
-        "S+ Rank",
-        "SS Rank",
-        "Lower Echelon's Pardon"
-    ]
-    if not roles_check(ctx.author, allowed_roles):
-        await ctx.send("You are not qualified for this tournament.")
+@bot.hybrid_command(name = 'tournament', description = 'Show info about a specific tournament')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def show_tournaments(ctx: commands.Context, tournament_id: int):
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, registration_start, registration_end, time, minimum_rank, maximum_rank FROM tournaments WHERE id = ?", (tournament_id, ))
+        tournament = cursor.fetchone()
+    if not tournament:
+        await ctx.send("Wrong ID.", ephemeral=True)
+        return
+    response  = tournament[0]
+    response += f"\nStart: {tournament[3]}"
+    response += f"\nRegistration: {tournament[1]} - {tournament[2]}"
+    response += f"\nRank floor: {tournament[4]}"
+    response += f"\nRank cap: {tournament[5]}"
+    await ctx.send(response, ephemeral=True)
+
+def qualified(member, floor, cap):
+    ranks = list(rank_to_role.keys())
+    for rank in ranks[ranks.index(floor):ranks.index(cap)+1]:
+        if rank_to_role[rank] not in member.roles:
+            return False
+    return True
+
+@bot.hybrid_command(name = 'register', description = 'Register for the specific tournament')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def register(ctx: commands.Context, tournament_id: int):
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT registration_start, registration_end, minimum_rank, maximum_rank FROM tournaments WHERE id = ?", (tournament_id, ))
+        tournament = cursor.fetchone()
+    if not tournament:
+        await ctx.send("Wrong ID.", ephemeral=True)
         return
     
-    now = int(time())
-    if now < REG_START or REG_END < now:
-        utc_str = strftime("%Y-%m-%d %H:%M:%S", gmtime(now))
-        await ctx.send(f"Registration is closed. Current UTC time: `{utc_str}`.\nRegistration is open from April 13 to April 19 (GMT +0).")
+    dtformat = "%Y-%m-%d %H:%M:%S"
+    registration_start, registration_end = datetime.strptime(tournament[0], dtformat), datetime.strptime(tournament[1], dtformat)
+
+    now = datetime.now()
+    if now < registration_start or registration_end < now:
+        await ctx.send(f"Registration is closed. Current UTC time: `{now}`.\nRegistration is open from `{registration_start}` to `{registration_end}`.", ephemeral=True)
+        return
+
+    if not qualified(ctx.author, tournament[2], tournament[3]):
+        await ctx.send("You are not qualified for this tournament.", ephemeral=True)
         return
     
     discord_id = str(ctx.author.id)
@@ -490,45 +571,58 @@ async def register(ctx: commands.Context):
         users_result = cursor.fetchone()
 
         if not users_result:
-            await ctx.send("You have not linked your account yet. Please use /link.")
+            await ctx.send("You have not linked your account yet. Please use /link.", ephemeral=True)
             return
         
         tetrio_username = users_result[0] #moved down 
 
-        cursor.execute("SELECT * FROM registration_board WHERE discord_id =?", (discord_id,))
+        cursor.execute("SELECT * FROM registration_board WHERE discord_id = ? AND tournament_id = ?", (discord_id, tournament_id))
         register_result = cursor.fetchone()
 
         if register_result:
             await ctx.send("You have registered already.")
             return
         
-        cursor.execute("INSERT INTO registration_board (discord_id, tetrio_username) VALUES (?, ?)",
-              (discord_id, tetrio_username))
+        cursor.execute("INSERT INTO registration_board (discord_id, tetrio_username, tournament_id) VALUES (?, ?, ?)",
+              (discord_id, tetrio_username, tournament_id))
         conn.commit()
         
-    await ctx.send("Registration completed. Use `/registration_show` to see a list of registered players.")
+    await ctx.send("Registration completed. Use `/registration_show` to see a list of registered players.", ephemeral=True)
 
-@bot.hybrid_command(name = 'registration_show', description = 'Show a list of registered player(s)')
+@bot.hybrid_command(name = 'registration_show', description = 'Show a list of registered players')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
-async def registration_show(ctx: commands.Context):
-    await ctx.defer()
-
+async def registration_show(ctx: commands.Context, tournament_id: int):
     with connect_db() as conn:
         cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT name, registration_start
+            FROM tournaments
+            WHERE id = (?)
+        ''', (tournament_id, ))
+        tournament = cursor.fetchone()
+
+        if not tournament:
+            await ctx.send("Wrong ID.", ephemeral=True)
+            return
+        if datetime.strptime(tournament[1], "%Y-%m-%d %H:%M:%S") > datetime.now():
+            await ctx.send("Registration hasn't opened.", ephemeral=True)
+            return
         
         cursor.execute('''
             SELECT registration_board.tetrio_username, registration_board.discord_id, users.rank, users.tr
             FROM registration_board
             JOIN users ON registration_board.discord_id = users.discord_id
+            WHERE registration_board.tournament_id = ?
             ORDER BY users.rank DESC
-        ''')
+        ''', (tournament_id, ))
         results = cursor.fetchall()
 
         if not results:
-            await ctx.send("No players have registered yet.")
+            await ctx.send("No players have registered yet.", ephemeral=True)
             return
 
-        output = "**ACG Season 2 registration board:**\n```ini\n"  #change name each tourney ig
+        output = f"**{tournament[0]} registration board:**\n```ini\n"  #change name each tourney ig #fake
         output += f"{'Seed #':<7} {'Tetrio Username':<20} {'Discord ID':<30} {'Rank':<10} {'TR':<10}\n"
         output += "-" * 85 + "\n"
 
@@ -542,32 +636,67 @@ async def registration_show(ctx: commands.Context):
 
     output += "```"
         
-    await ctx.send(output)
+    await ctx.send(output, ephemeral=True)
 
-@bot.hybrid_command(name='unregister', description='Unregister from the current tournament')
+@bot.hybrid_command(name='unregister', description='Unregister from a tournament')
 @app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
-async def unregister(ctx: commands.Context):
-    await ctx.defer()
-
+async def unregister(ctx: commands.Context, tournament_id: int):
     discord_id = str(ctx.author.id)
 
     with connect_db() as conn:
         cursor = conn.cursor()
 
-        cursor.execute("SELECT * FROM registration_board WHERE discord_id = ?", (discord_id,))
-        if not cursor.fetchone():
-            await ctx.send("You have not registered.")
+        cursor.execute('''
+            SELECT name
+            FROM tournaments
+            WHERE id = (?)
+        ''', (tournament_id, ))
+        tournament = cursor.fetchone()
+
+        if not tournament:
+            await ctx.send("Wrong ID.", ephemeral=True)
             return
 
-        cursor.execute("DELETE FROM registration_board WHERE discord_id = ?", (discord_id,))
+        cursor.execute("SELECT * FROM registration_board WHERE discord_id = ? AND tournament_id = ?", (discord_id, tournament_id))
+        if not cursor.fetchone():
+            await ctx.send(f"You have not registered for {tournament[0]}.", ephemeral=True)
+            return
+
+        cursor.execute("DELETE FROM registration_board WHERE discord_id = ? AND tournament_id = ?", (discord_id, tournament_id))
         conn.commit()
 
-    await ctx.send("You have been successfully unregistered from the tournament.")
+    await ctx.send("You have been successfully unregistered from the tournament.", ephemeral=True)
+
+
+@bot.hybrid_command(name='mods', description='Show which mods are available')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def list_mods(ctx: commands.Context, series: Literal['chesstris', 'chesstris blitz', 'acg', 'endurance']):
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, status FROM mods WHERE category = ?", (series, ))
+        mods = cursor.fetchall()
+    string = '```\n'
+    string += '\n'.join(['{:<20}{}'.format(mod[0], mod[1]) for mod in mods])
+    string += '\n```'
+    await ctx.send(string, ephemeral=True)
+
+@bot.hybrid_command(name='mod', description='Show mod infomation')
+@app_commands.guilds(discord.Object(id=TAC_GUILD_ID))
+async def describe(ctx: commands.Context, title: str):
+    with connect_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM mods WHERE name = ?", (title, ))
+        mod = cursor.fetchone()
+    if not mod:
+        await ctx.send('mod not found', ephemeral=True)
+        return
+    string = '{}\n*{}*\nrulset: {}\n```{}```'.format(mod[0], mod[4], mod[3], mod[5])
+    await ctx.send(string, ephemeral=True)
 
 def add_column(cursor, name, sqltype):
     try:
-        cursor.execute(f"ALTER TABLE users ADD COLUMN {name} {sqltype}")
-    except sqlite3.OperationalError:
+        cursor.execute(f"ALTER TABLE users ADD COLUMN `{name}` {sqltype}")
+    except sqlite3.OperationalError as e:
         print(f"Column '{name}' already exists.")
 
 def migrate_db():
